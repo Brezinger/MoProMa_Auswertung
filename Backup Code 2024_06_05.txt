@@ -1,0 +1,257 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Mon Apr 29 11:21:04 2024
+
+@author: Besitzer
+"""
+import numpy as np
+import pandas as pd
+import math
+
+p_ges_ref= 100500 #erstmal zum manuell Eingeben, später evtl. Zugriff auf Pitot
+p_stat_ref=98000
+t=700 # Profiltiefe
+
+
+
+def log_drive_file(file_path_drive): # Funktion zum Einlesen der drive Datei
+    dates = []  # Liste zum Speichern der Daten
+    times = []  #absolute Zeit
+    positions = [] #Position des Nachlaufrechens
+    velocities = [] #Geschwindigkeit des Nachlaufrechens
+
+    with open(file_path_drive, 'r') as file:
+        num_entries = sum(1 for line in file)  # Anzahl der Zeilen in der Datei zählen
+        file.seek(0)  # Zurück zum Anfang der Datei
+
+        for _ in range(num_entries):
+            parts = file.readline().strip().split()  # Zeile in Bestandteile aufteilen
+            if len(parts) == 4: # kontrolliert ob Werte richtig eingetragen wurden
+                # Datum, Zeit, Position und Geschwindigkeit extrahieren
+                date = parts[0]
+                time = parts[1]
+                position = float(parts[2])
+                velocity = float(parts[3])
+                #hier wäre ein else super, welches die Zeile rausschmeißt wenn fehlerhaft
+
+                # Daten speichern
+                dates.append(date)
+                times.append(time)
+                positions.append(position)
+                velocities.append(velocity)
+
+    return dates, times, positions, velocities
+
+def log_AOA_file(file_path_AOA):
+    dates = []  # Liste zum Speichern der Daten
+    times = [] #absolute Zeiten
+    alphas = [] #Liste von Anstellwinkeln in Abh. der Zeit
+
+    with open(file_path_AOA, 'r') as file:
+        num_entries = sum(1 for line in file)  # Anzahl der Zeilen in der Datei zählen
+        file.seek(0)  # Zurück zum Anfang der Datei
+
+        for _ in range(num_entries):
+            parts = file.readline().strip().split()  # Zeile in Bestandteile aufteilen
+            if len(parts) == 4:
+                # Datum, Zeit, Position und Geschwindigkeit extrahieren
+                date = parts[0]
+                time = parts[1]
+                position = float(parts[2])
+                turn = float(parts[3])
+                
+                #Daten umrechnen nach MoProMa_Lab(-->deg)
+                abs_sensor_pos_deg = - position / 2 ** 14 * 360 - turn * 360 + 162.88330078125
+                gear_ratio = 60 / (306 * 2)
+                alpha = abs_sensor_pos_deg * gear_ratio #degree
+
+                # Daten speichern
+                dates.append(date)
+                times.append(time)
+                alphas.append(alpha)
+
+    return dates, times, alphas
+
+def calc_meanAOA(alphas): #berechnet den Mittelwert des Anstellwinkels
+    # der Zeit am Voicerecorder kann entnommen werden wann eine Änderung des Anstellwinkels stattfindet,
+    #dann kann im AOA file die zugehörige Zeile gesucht werden und unten eingetragen in welchem Bereich alpha gemittelt werden soll
+    alpha_mean=0
+    
+    alpha_mean = np.mean(alphas[2:25]) #hier eingeben Zeile von : bis
+    
+    return alpha_mean
+
+def log_pstat_oben_file(file_path_stat_oben): #Liest die Drücke aus den Statikmessstellen auf der oberseite des Profils ein
+    times_p_oben = []
+    p_stats_oben = {}
+
+    with open(file_path_stat_oben, 'r') as file: #hier wird die Anzahl der Zeilen (Zeit) und der Spalten (Messstellen) ermittelt
+        first_line = file.readline().strip()  # Liest die erste Zeile der Datei ein
+        num_columns = len(first_line.split(' '))  # Anzahl der Spalten ermitteln
+        num_entries = sum(1 for line in file) +1 # Anzahl der Zeilen in der Datei zählen, plus die erste Zeile
+        file.seek(0)  # Zurück zum Anfang der Datei
+
+        for _ in range(num_entries):
+            parts = file.readline().strip().split()  # Zeile in Bestandteile aufteilen
+            if len(parts) == num_columns: #(len(first_line)-2):
+                # Zeit extrahieren
+                time = parts[0]
+                times_p_oben.append(time)
+                # Druckvektoren extrahieren
+        for i in range(1, num_columns - 1):  # Von der zweiten Spalte bis zur vorletzten Spalte
+            vector = []  # Vektor für die Spalte erstellen
+            file.seek(0)  # Zurück zum Anfang der Datei
+            for line in file:
+                entries = line.strip().split()  # Einträge in der Zeile aufsplitten
+                entry = int(entries[i])  # Den Eintrag in der aktuellen Spalte auswählen
+                # Daten speichern
+                vector.append(entry)  # Eintrag zum Vektor hinzufügen
+            # Benennen der p_i Vektoren
+            vector_name = f"p{i}"  # Generiere den Namen für den Vektor
+            p_stats_oben[vector_name] = vector  # Weise den Vektor einem Eintrag im Dictionary zu
+                
+    return p_stats_oben, times_p_oben
+
+def log_pstat_unten_file(file_path_stat_unten): #Liest die Drücke aus den Statikmessstellen auf der oberseite des Profils ein
+    times_p_unten = []
+    p_stats_unten = {}
+
+    with open(file_path_stat_unten, 'r') as file: #hier wird die Anzahl der Zeilen (Zeit) und der Spalten (Messstellen) ermittelt
+        first_line = file.readline().strip()  # Liest die erste Zeile der Datei ein
+        num_columns = len(first_line.split(' '))  # Anzahl der Spalten ermitteln
+        num_entries = sum(1 for line in file) +1 # Anzahl der Zeilen in der Datei zählen, plus die erste Zeile
+        file.seek(0)  # Zurück zum Anfang der Datei
+
+        for _ in range(num_entries):
+            parts = file.readline().strip().split()  # Zeile in Bestandteile aufteilen
+            if len(parts) == num_columns: #(len(first_line)-2):
+                # Zeit extrahieren
+                time = parts[0]
+                times_p_unten.append(time)
+                # Druckvektoren extrahieren
+        for i in range(1, num_columns - 1):  # Von der zweiten Spalte bis zur vorletzten Spalte
+            vector = []  # Vektor für die Spalte erstellen
+            file.seek(0)  # Zurück zum Anfang der Datei
+            for line in file:
+                entries = line.strip().split()  # Einträge in der Zeile aufsplitten
+                entry = int(entries[i])  # Den Eintrag in der aktuellen Spalte auswählen
+                # Daten speichern
+                vector.append(entry)  # Eintrag zum Vektor hinzufügen
+            # Benennen der p_i Vektoren
+            vector_name = f"p{i}"  # Generiere den Namen für den Vektor
+            p_stats_unten[vector_name] = vector  # Weise den Vektor einem Eintrag im Dictionary zu
+                
+    return p_stats_unten, times_p_unten
+
+# def calc_meanpstat(p_stat):
+#     p_stat_mean=[]
+    
+#     #Berechnet den Mittelwert jeder Spalte (im Beobachtungszeitraum durschnittlich vorherrschender Druck)
+#     mean_stat = np.mean(list(p_stat.values()), axis=1)
+#     # mean_vector ist ein Numpy-Array, du kannst es in eine Liste konvertieren, falls benötigt
+#     p_stat_mean = mean_stat.tolist()
+
+#     return p_stat_mean
+       
+# def calc_cp(p_stat_mean, p_ges_ref, p_stat_ref):
+#     cp = []  # Vektor für die berechneten cpi-Werte (Anzahl entspricht Statikdruckabnehmestellen um Profil)
+
+#     for element in p_stat_mean:
+#         cpi = 1 - ((p_ges_ref - element) / (p_ges_ref - p_stat_ref))
+#         cp.append(cpi)
+
+    # return cp
+    
+def berechne_cpi(p_stats_oben, p_ges_ref, p_stat_ref): #erstellt ein dict in dem für jede Messstelle
+    #ein cp Wert in abhängigkeit der Zeit berechnet wird
+    
+    cpi_dict = {}
+    for key, values in p_stats_oben.items():
+        cpi_values = []
+        for i, value in enumerate(values):
+            cpi = 1 - ((p_ges_ref - value) / (p_ges_ref - p_stat_ref))
+            cpi_values.append(cpi)
+        cpi_dict['cp' + key[1:]] = cpi_values
+        
+    return cpi_dict
+
+def log_airfoil_file(file_path_airfoil):
+    # Excel-Datei einlesen
+    daten = pd.read_excel(file_path_airfoil)
+    
+    # x-Koordinaten
+    # Klappe oben: B3 bis B9 auswählen und in einen Vektor speichern
+    x_Kl_o = daten.iloc[1:7, 1].tolist()
+    # Klappe unten: B42 bis B61 auswählen und in einen Vektor speichern
+    x_Kl_u = daten.iloc[60:64, 1].tolist()
+    # Flügel oben:B10...B40 ohne B28, B40 auswählen und in einen Vektor speichern
+    x_Fl_o_1 = daten.iloc[8:26, 1].tolist()
+    x_Fl_o_2 = daten.iloc[27:38, 1].tolist()
+    x_Fl_o = x_Fl_o_1 + x_Fl_o_2
+    # Flügel unten: B10 bis B40 auswählen und in einen Vektor speichern
+    x_Fl_u = daten.iloc[40:60, 1].tolist()
+    
+    
+    # y-Koordinaten
+    # Klappe oben: C3 bis C9 auswählen und in einen Vektor speichern
+    y_Kl_o = daten.iloc[1:7, 2].tolist()
+    # Klappe unten: C62 bis C66 auswählen und in einen Vektor speichern
+    y_Kl_u = daten.iloc[60:64, 2].tolist()
+    # Flügel oben:C10...C40 ohne C28, C40 auswählen und in einen Vektor speichern
+    y_Fl_o_1 = daten.iloc[8:26, 2].tolist()
+    y_Fl_o_2 = daten.iloc[27:38, 2].tolist()
+    y_Fl_o = y_Fl_o_1 + y_Fl_o_2
+    # Flügel unten: C42 bis C61 auswählen und in einen Vektor speichern
+    y_Fl_u = daten.iloc[40:60, 2].tolist()
+    
+    
+    return x_Kl_o, list(x_Kl_u), x_Fl_o, x_Fl_u, y_Kl_o, y_Kl_u, y_Fl_o, y_Fl_u
+
+def calc_cn_ct(cp, x_Kl_o, x_Kl_u, x_Fl_o, x_Fl_u, y_Kl_o, y_Kl_u, y_Fl_o, y_Fl_u):
+    cn=0
+    ct=0
+    
+    for i in range(2, len(cp)-1):
+        cn += ((cp[i] + cp[i-1]) / 2) * ((x_Fl_o[i] - x_Fl_o[i-1]) / t)
+        
+    for i in range(2, len(cp)-1):
+        ct += ((cp[i] + cp[i-1]) / 2) * ((y_Fl_o[i] - y_Fl_o[i-1]) / t)
+    
+    
+    return cn, ct
+
+def calc_ca_cw(cn,ct,alpha_mean):
+    ca=0
+    cw=0
+    
+    ca=cn*math.cos(alpha_mean)-ct*math.sin(alpha_mean)
+    cw=cn*math.sin(alpha_mean)-ct*math.cos(alpha_mean)
+    
+    return ca, cw
+
+
+
+   
+# Beispielaufruf
+file_path_drive = '20230804-235819_drive.dat'
+file_path_AOA = '20230804-235818_AOA.dat'
+file_path_stat_oben = '20230804-235818_static_K02_clean_short_oben.dat'
+file_path_stat_unten = '20230804-235818_static_K03_clean_short_unten.dat'
+file_path_airfoil = 'airfoil_geometry_Mu_13_33.xlsx'
+
+dates, times, positions, velocities = log_drive_file(file_path_drive)
+dates, times, alphas = log_AOA_file(file_path_AOA)
+alpha_mean = calc_meanAOA(alphas)
+p_stats_oben, times_p_oben = log_pstat_oben_file(file_path_stat_oben)
+p_stats_unten, times_p_unten = log_pstat_unten_file(file_path_stat_unten)
+#p_stat_mean = calc_meanpstat(p_stats)
+#cp = calc_cp(p_stat_mean, p_ges_ref, p_stat_ref)
+cpi_dict = berechne_cpi(p_stats_oben, p_ges_ref, p_stat_ref)
+x_Kl_o, x_Kl_u, x_Fl_o, x_Fl_u, y_Kl_o, y_Kl_u, y_Fl_o, y_Fl_u = log_airfoil_file(file_path_airfoil)
+#cn, ct = calc_cn_ct(cp, x_Kl_o, x_Kl_u, x_Fl_o, x_Fl_u, y_Kl_o, y_Kl_u, y_Fl_o, y_Fl_u)
+#ca, cw = calc_ca_cw(cn,ct,alpha_mean)
+
+
+
+
+
