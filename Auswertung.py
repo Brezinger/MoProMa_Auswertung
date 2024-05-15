@@ -13,7 +13,7 @@ p_ges_ref= 100500 #erstmal zum manuell Eingeben, später evtl. Zugriff auf Pitot
 p_stat_ref=98000
 t=700 # Profiltiefe
 start_time = "2023-08-04 21:58:36"
-end_time =   "2023-08-04 21:58:37"
+end_time = "2023-08-04 21:58:37"
 #recording_start_time = "2023-08-04 21:58:37"
 
 
@@ -87,26 +87,38 @@ def calc_meanAOA(alphas, start_time, end_time):
     
     return alpha_mean
 
-def log_pstat_oben_file(file_path_stat_oben): #Liest die Drücke aus den Statikmessstellen auf der Oberseite des Profils ein
-    
-    # Einlesen der ersten Zeile, um die Anzahl der Spalten zu bestimmen
-    with open(file_path_stat_oben, 'r') as file:
-        first_line = file.readline().split()
+def read_DLR_pressure_scanner_file(filename, n_sens, t0): #Liest die Drücke aus den Statikmessstellen auf der Oberseite des Profils ein
+    """
+    Converts raw sensor data to pandas DataFrame
+    :param filename:            File name
+    :param n_sens:              number of sensors
+    :param t0:                  time of first timestamp
+    :return:                    pandas DataFrame with absolute time and pressures
+    """
 
-    # Die Anzahl der Spalten ohne die erste und letzte Spalte bestimmen
-    anzahl_spalten = len(first_line) - 2
+    # Convert start time to milliseconds since it is easier to handle arithmetic operations
+    start_time_ms = t0.timestamp() * 1000
+
+    namelist = filename.rstrip(".dat").split("_")
+    unit_name = "_".join(namelist[-2:])
 
     # Spaltennamen für das DataFrame erstellen
-    spaltennamen = ["Time"] + [f"K02_{i}" for i in range(1, anzahl_spalten + 1)]
+    columns = ["Time"] + [unit_name + f"_{i}" for i in range(1, n_sens+1)]
 
     # Einlesen der Daten in ein DataFrame
-    p_stats_oben = pd.read_csv(file_path_stat_oben, sep="\s+", header=None, names=spaltennamen, usecols=range(anzahl_spalten + 1), engine='python')
+    df = pd.read_csv(filename, sep="\s+", header=None, names=columns, usecols=range(n_sens+1), on_bad_lines='skip',
+                     engine='python')
 
-    # Die letzte Spalte löschen
-    p_stats_oben.drop(columns=["K02_" + str(anzahl_spalten)], inplace=True)
+    # drop lines with missing data
+    df = df.dropna().reset_index(drop=True)
+
+    # Calculate the time difference in milliseconds from the first row
+    time_diff_ms = df['Time'] - df['Time'].iloc[0]
+
+    # Add this difference to the start time (in milliseconds) and convert back to datetime
+    df['Time'] = pd.to_datetime(start_time_ms + time_diff_ms, unit='ms')
                 
-    return p_stats_oben
-
+    return df
 
 def log_pstat_unten_file(file_path_stat_unten): #Liest die Drücke aus den Statikmessstellen auf der Unterseite des Profils ein
         # Einlesen der ersten Zeile, um die Anzahl der Spalten zu bestimmen
@@ -127,9 +139,12 @@ def log_pstat_unten_file(file_path_stat_unten): #Liest die Drücke aus den Stati
                     
         return p_stats_unten
 
+<<<<<<< HEAD:Auswertung.py
 
 
 
+=======
+>>>>>>> e60df2491a6344b9e0912a1b58ff12863b581467:uebung1.py
 def adjust_timestamps(alphas, p_stats_oben):
     # Extrahiere den Startzeitstempel des ersten Datensatzes (als pandas Timestamp oder String)
     start_timestamp_str = alphas.iloc[0, 0]
@@ -165,47 +180,26 @@ def adjust_timestamps(alphas, p_stats_oben):
 
 
 
-# def synchronize_data(alphas, p_stats_oben):
-#     # Konvertiere die Zeitstempel in datetime-Objekte
-#     alphas['Time'] = pd.to_datetime(alphas['Time'])
-#     p_stats_oben['Time'] = pd.to_datetime(p_stats_oben['Time'])
-    
-#     # Debugging-Ausgabe: Überprüfe Zeitstempel-Bereiche
-#     print("Alphas Zeitstempel-Bereich:", alphas['Time'].min(), "-", alphas['Time'].max())
-#     print("P Stats Oben Zeitstempel-Bereich:", p_stats_oben['Time'].min(), "-", p_stats_oben['Time'].max())
-    
-#     # Führe eine äußere Verknüpfung durch
-#     merged = pd.merge(alphas, p_stats_oben, on='Time', how='outer')
-    
-#     # Debugging-Ausgabe
-#     print("Merged DataFrame before sorting:")
-#     print(merged.head())
+def synchronize_data(merge_dfs_list):
+    """
+    Syncronizes and interpolates sensor data, given in pandas DataFrames with a timestamp
+    :param merge_dfs_list:      list of pandas DataFrames containing sensor data. Must contain "Time" column in
+                                datetime format
+    :return:                    merged dataframe with all sensor data, interpolated according time
+    """
 
-#     # Sortiere den DataFrame nach Zeitstempel
-#     merged.sort_values(by='Time', inplace=True)
-    
-#     # Debugging-Ausgabe
-#     print("Merged DataFrame after sorting:")
-#     print(merged.head())
+    # Merge the DataFrames using merge_asof
+    merged_df = merge_dfs_list[0]
+    for df in merge_dfs_list[1:]:
+        merged_df = pd.merge_asof(merged_df, df, on='Time', tolerance=pd.Timedelta('1ms'), direction='nearest')
 
-#     # Interpoliere fehlende Werte
-#     merged.interpolate(method='linear', inplace=True)
-    
-#     # Debugging-Ausgabe
-#     print("Merged DataFrame after interpolation:")
-#     print(merged.head())
+    # Set the index to 't_abs' to use time-based interpolation
+    merged_df.set_index('Time', inplace=True)
 
-#     # Teile den DataFrame wieder auf
-#     synchronized_alphas = merged[merged['Alpha'].notna()]
-#     synchronized_p_stats_oben = merged[merged['Alpha'].isna()].drop(columns=['Alpha'])
-    
-#     # Debugging-Ausgabe
-#     print("Synchronized Alphas DataFrame:")
-#     print(synchronized_alphas.head())
-#     print("Synchronized P Stats Oben DataFrame:")
-#     print(synchronized_p_stats_oben.head())
+    # Interpolate missing values using time-based interpolation
+    interpolated_df = merged_df.interpolate(method='time')
 
-#     return synchronized_alphas, synchronized_p_stats_oben
+    return interpolated_df
 
 # # Beispielaufruf der Funktion
 # # Beispiel-Daten erstellen
@@ -252,15 +246,6 @@ def adjust_timestamps(alphas, p_stats_oben):
 #     synchronized_p_stats_oben = merged.drop(columns=['Alpha'])
     
 #     return synchronized_alphas, synchronized_p_stats_oben
-
-
-
-
-
-
-
-
-
 
 
 
@@ -349,26 +334,24 @@ def adjust_timestamps(alphas, p_stats_oben):
 
 
 
-   
+if __name__ == '__main__':
+    file_path_drive = '20230804-235819_drive.dat'
+    file_path_AOA = '20230804-235818_AOA.dat'
+    file_path_stat_oben = '20230804-235818_static_K02.dat'
+    file_path_stat_unten = '20230804-235818_static_K03.dat'
+    file_path_airfoil = 'airfoil_geometry_Mu_13_33.xlsx'
 
-file_path_drive = '20230804-235819_drive.dat'
-file_path_AOA = '20230804-235818_AOA.dat'
-file_path_stat_oben = '20230804-235818_static_K02.dat'
-file_path_stat_unten = '20230804-235818_static_K03_clean_short_unten.dat'
-file_path_airfoil = 'airfoil_geometry_Mu_13_33.xlsx'
-
-dates, times, positions, velocities = log_drive_file(file_path_drive)
-alphas = log_AOA_file(file_path_AOA)
-alpha_mean = calc_meanAOA(alphas, start_time, end_time)
-p_stats_oben = log_pstat_oben_file(file_path_stat_oben)
-p_stats_unten = log_pstat_unten_file(file_path_stat_unten)
-p_stats_oben = adjust_timestamps(alphas, p_stats_oben)
-# synchronized_alphas, synchronized_p_stats_oben = synchronize_data(alphas, p_stats_oben)
-# cpi_dict = berechne_cpi(p_stats_oben, p_ges_ref, p_stat_ref)
-# x_o, x_u, y_o, y_u = log_airfoil_file(file_path_airfoil)
-# cn, ct = calc_cn_ct(cpi_dict, x_o, y_o)
-# ca, cw = calc_ca_cw(cn,ct,alpha_mean)
-print('done')
+    dates, times, positions, velocities = log_drive_file(file_path_drive)
+    alphas = log_AOA_file(file_path_AOA)
+    alpha_mean = calc_meanAOA(alphas, start_time, end_time)
+    p_stats_oben = read_DLR_pressure_scanner_file(file_path_stat_oben, n_sens=32, t0=alphas["Time"].iloc[0])
+    p_stats_unten = read_DLR_pressure_scanner_file(file_path_stat_unten, n_sens=32, t0=alphas["Time"].iloc[0])
+    df_sync = synchronize_data([p_stats_oben, p_stats_unten, alphas])
+    # cpi_dict = berechne_cpi(p_stats_oben, p_ges_ref, p_stat_ref)
+    # x_o, x_u, y_o, y_u = log_airfoil_file(file_path_airfoil)
+    # cn, ct = calc_cn_ct(cpi_dict, x_o, y_o)
+    # ca, cw = calc_ca_cw(cn,ct,alpha_mean)
+    print('done')
 
 
 
