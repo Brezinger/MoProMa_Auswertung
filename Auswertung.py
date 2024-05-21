@@ -348,7 +348,7 @@ if __name__ == '__main__':
     file_path_pstat_K04 = '20230804-235818_static_K04.dat'
     file_path_ptot_rake = '20230804-235818_ptot_rake.dat'
     file_path_pstat_rake = '20230804-235818_pstat_rake.dat'
-    file_path_airfoil = 'Messpunkte Demonstrator.xlsx'
+    file_path_airfoil = 'Messpunkte_Demonstrator.xlsx'
 
     alphas = read_AOA_file(file_path_AOA)
     alpha_mean = calc_mean(alphas, start_time, end_time)
