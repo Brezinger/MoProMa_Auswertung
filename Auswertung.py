@@ -304,34 +304,38 @@ def plot(df, start_time, end_time, column_name):
     
     return 1
 
-def interpolate_rake(df_sync, df_sync_stat_sort):
+def sort_rake_data(df_sync, num_columns):
     """
-    -> brings columns of df_sync in shape for drag coefficient calculation
-    -> the last two columns are pstat and ptot of pitotstatic measurement unit
-    :param df_sync:                 pandas DataFrame containing string names of pstat_rake, ptot_rake, pstat and ptot
-    :param df_sync_stat_sort:       pandas DataFrame containing pstat and ptot columns
-    :return df_sync_rake_sort:      rake pressures and pstat and ptot
+    prepares dataframe for cd calculation with ptot_rake_ , pstat_rake_ , ptot and pstat
+    :param df_sync:                 synchronized data
+    :param num columns:             number of measuring points of ptot_rake (usually 32)
+    :return:df_sync_rake_sort       dataframe with necessary data for cd calculation
     """
-    # Filter columns of df_sync to include only those whose index begins with 'ptot_rake_' or 'pstat_rake_'
-    columns_to_keep = [col for col in df_sync.columns if col.startswith('ptot_rake_') or col.startswith('pstat_rake_')]
-    df_sync_filtered = df_sync[columns_to_keep].copy()
-    #print(df_sync_filtered)
+    # extracts index of df_sync (=time) and generates new pandas dataframe df_rake_stat
+    index = df_sync.index
+    columns = [f'pstat_rake__{i+1}' for i in range(num_columns)]
+    df_rake_stat = pd.DataFrame(index=index, columns=columns)
     
+    # Fill four columns with measured pstat of wake rake
+    df_rake_stat.iloc[:, 0] = df_sync['pstat_rake_1']
+    df_rake_stat.iloc[:, 10] = df_sync['pstat_rake_2']
+    df_rake_stat.iloc[:, 21] = df_sync['pstat_rake_3']
+    df_rake_stat.iloc[:, 31] = df_sync['pstat_rake_4']
     
-    # Interpolate pstat_rake values to match the number of ptot_rake values
-    ptot_columns = [col for col in df_sync_filtered.columns if col.startswith('ptot_rake_')]
-    print(ptot_columns)
-    pstat_columns = [col for col in df_sync_filtered.columns if col.startswith('pstat_rake_')]
-    print(pstat_columns)
-    
-    df_sync_filtered[pstat_columns] = df_sync_filtered[pstat_columns].interpolate(method='linear', axis=1)
+    # Interpolate the columns
+    df_sync_rake_sort = df_rake_stat.astype(float).interpolate(axis=1)
     
     # Add the 'pstat' and 'ptot' columns from df_sync_stat_sort
-    df_sync_filtered['pstat'] = df_sync_stat_sort['pstat'].values
-    df_sync_filtered['ptot'] = df_sync_stat_sort['ptot'].values
+    df_sync_rake_sort['pstat'] = df_sync_stat_sort['pstat'].values
+    df_sync_rake_sort['ptot'] = df_sync_stat_sort['ptot'].values
     
-    return df_sync_filtered
+    filtered_columns = [col for col in df_sync.columns if col.startswith('ptot_rake_')]
 
+    # Insert filtered columns at the beginning of df_sync_rake_sort
+    for col in reversed(filtered_columns):
+        df_sync_rake_sort.insert(0, col, df_sync[col])
+
+    return df_sync_rake_sort
 
 #def calc_rake_cd(df):
     
@@ -363,10 +367,11 @@ if __name__ == '__main__':
     df_cp = calc_cp(df_sync_stat_sort)
     df_cn_ct = calc_cn_ct(df_cp, df_airfoil, t=499)
     df_ca_cw = calc_ca_cw(df_cn_ct, df_sync)
-    plot(df_ca_cw, start_time, end_time, 'ca')
-    plot(df_ca_cw, start_time, end_time, 'cw')
-    df_sync_filtered = interpolate_rake(df_sync, df_sync_stat_sort)
+    #plot(df_ca_cw, start_time, end_time, 'ca')
+    #plot(df_ca_cw, start_time, end_time, 'cw')
+    #df_sync_filtered = interpolate_rake(df_sync, df_sync_stat_sort)
     #df_rake_cd = calc_rake_cd(df_sync_filtered)
+    df_sync_rake_sort = sort_rake_data(df_sync, num_columns=32)
     
 
     
