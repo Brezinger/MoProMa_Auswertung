@@ -10,9 +10,11 @@ import math
 from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 from scipy.integrate import simps
+from scipy import interpolate, integrate, optimize, signal
 
-start_time = "2023-08-04 21:58:36"
-end_time = "2023-08-04 21:58:40"
+start_time = "2023-08-04 21:58:19"
+end_time = "2023-08-04 21:58:49"
+l_ref = 700 #[mm]
 
 
 
@@ -247,62 +249,32 @@ def calc_cn_ct(df_cp, df_airfoil, t):
     
     return df_cn_ct
 
-def calc_ca_cw(df_cn_ct, df_sync):
+def calc_cl_cd(df_cn_ct, df_sync):
     """
     Calculates lift and drag coefficient. Drag coefficient derived from static pressure ports on airfoil!
-    Equations from Döller page 41
+    Equations from Döller page 41, applying wind tunnel correction according Althasus eq. 36
     :param df_cn_ct:        list of pandas DataFrames containing "cn" and "ct" column
     :param df_sync:         list of pandas DataFrames containing column "Alpha"
-    :return: df_ca_cw:      merged dataframe with lift and drag coefficient at certain times
+    :return: df_cl_cd:      merged dataframe with lift and drag coefficient at certain times
     """
    
     alpha = df_sync.loc[:, "Alpha"] # extracting the syncronized alpha column from df_sync
     cn = df_cn_ct.loc[:,"cn"]  # extracting the cn column from df_cn_ct
     ct = df_cn_ct.loc[:,"ct"]  # extracting the ct column from df_cn_ct
     # calculating lift coefficient
-    ca_values = cn * np.cos(np.deg2rad(alpha)) - ct * np.sin(np.deg2rad(alpha))
+    cl_values = cn * np.cos(np.deg2rad(alpha)) - ct * np.sin(np.deg2rad(alpha))
     # calculating drag coefficient
-    cw_values = cn * np.sin(np.deg2rad(alpha)) + ct * np.cos(np.deg2rad(alpha))
+    cd_values = cn * np.sin(np.deg2rad(alpha)) + ct * np.cos(np.deg2rad(alpha))
     # creating a Data Frame with column of lift coefficients and drag coefficients
-    df_ca_cw = pd.DataFrame({'ca': ca_values, 'cw': cw_values})
+    df_cl_cd = pd.DataFrame({'cl': cl_values, 'cd_stat': cd_values})
     
-    return df_ca_cw
-
-def plot(df, start_time, end_time, column_name):
-    """
-    generates plots of pandas DataFrame containing Time in row index and the specified column name in 
-    parameter column_name between specified time interval
-    :param df:                  pandas dataframe
-    :param start_time:          time at which plot begins
-    :param start_time:          time at which plot ends
-    :param column_name          this column name will be plotted vs time
-    :return:1                   placeholder return value
-    """
-    # Filter the DataFrame based on the start and end times
-    if start_time is not None:
-        df = df[df.index >= start_time]
-    if end_time is not None:
-        df = df[df.index <= end_time]
-        
-    # Plotting with Matplotlib
-    plt.figure(figsize=(12, 6))
-    plt.plot(df.index, df[column_name], label=column_name, color='blue')
+    # apply wind tunnel wall correction
+    lambda_series = lambda_wall_corr['lambda'] #lambda_wall_corr is a Series
+    df_cl_cd['cl'] = df_cl_cd['cl'] * (1 - 2 * lambda_series * (sigma_wall_corr + xi_wall_corr)-sigma_wall_corr)
+    df_cl_cd['cd_stat'] = df_cl_cd['cd_stat'] * (1 - 2 * lambda_series * (sigma_wall_corr + xi_wall_corr))
     
-    # Calculate the mean value of the filtered DataFrame
-    mean_value = df[column_name].mean()
-    # Add a horizontal line for the mean value
-    plt.axhline(mean_value, color='red', linestyle='--', label=f'Mean Value: {mean_value:.2f}')
     
-    # Adding titles and labels
-    plt.title(f'{column_name} vs Time')
-    plt.xlabel('Time')
-    plt.ylabel(column_name)
-    plt.legend()
-    
-    # Display the plot
-    plt.show()
-    
-    return 1
+    return df_cl_cd
 
 def sort_rake_data(df_sync, num_columns):
     """
@@ -313,7 +285,7 @@ def sort_rake_data(df_sync, num_columns):
     """
     # extracts index of df_sync (=time) and generates new pandas dataframe df_rake_stat
     index = df_sync.index
-    columns = [f'pstat_rake__{i+1}' for i in range(num_columns)]
+    columns = [f'pstat_rake_{i+1}' for i in range(num_columns)]
     df_rake_stat = pd.DataFrame(index=index, columns=columns)
     
     # Fill four columns with measured pstat of wake rake
@@ -337,10 +309,228 @@ def sort_rake_data(df_sync, num_columns):
 
     return df_sync_rake_sort
 
-#def calc_rake_cd(df):
+def calc_rake_cd(df, lambda_wall_corr, sigma_wall_corr, xi_wall_corr):
+    """
+    Calculates drag coefficient cd based on wake rake measurements, provided by pandas dataframe df_sync_rake_sort
+    calculation according Hinz eq. 2.12, applying wind tunnel correction according Althasus eq. 36
+    :param df:              dataframe with synchronized data; columns: ptot_rake_i and pstat_rake_i (i=1...32; from wake rake) /
+                            pstat and ptot from free flow (provided by pitot static unit)
+    :return:df_cd_rake      dataframe with drag coefficient cd
+    """
+    # Create a list of column names for ptot_rake_i and pstat_rake_i
+    ptot_cols = [f'ptot_rake_{i}' for i in range(1, 33)]
+    pstat_cols = [f'pstat_rake_{i}' for i in range(1, 33)]
+    
+    # Verify columns exist in the DataFrame
+    for col in  ['pstat', 'ptot'] + ptot_cols + pstat_cols:
+        if col not in df.columns:
+            raise KeyError(f"Column '{col}' not found in DataFrame")
+    
+    # Create a new dataframe with the deltas
+    df_delta_numA = abs(df[ptot_cols].values - df[pstat_cols].values)
+    df_delta_numB = abs(df[ptot_cols].values - df['pstat'].values[:, None])
+    df_delta_denom = abs(df['ptot'].values[:, None] - df['pstat'].values[:, None])
+    
+    # Identify negative values and set them to NaN (negative square root!)
+    df_delta_numA[df_delta_numA < 0] = np.nan
+    df_delta_numB[df_delta_numB < 0] = np.nan
+    df_delta_denom[df_delta_denom < 0] = np.nan
+    
+    # Perform the calculations
+    result = np.sqrt(df_delta_numA / df_delta_denom) * (1 - np.sqrt(df_delta_numB / df_delta_denom))
+    
+    # Define trapezoidal rule integration
+    def trapezoidal_rule(y, x):
+        """
+        Apply the trapezoidal rule for integration.
+        :param y: array of function values at the sample points
+        :param x: array of sample points
+        :return: numerical integral
+        """
+        return np.trapz(y, x)
+    
+    # Assuming positions of the measurement points are equidistant
+    x_rake = np.linspace(0, 1, 32)
+    # integrating
+    cd_rake = np.apply_along_axis(lambda y: trapezoidal_rule(y[~np.isnan(y)], x_rake[~np.isnan(y)]), 1, result) * 2
+    
+    # Create a DataFrame with the cd_rake results and the same index as the df input dataframe
+    df_cd_rake = pd.DataFrame({'cd_rake': cd_rake}, index=df.index)
+    
+    # apply wind tunnel wall correction
+    lambda_series = lambda_wall_corr['lambda'] #lambda_wall_corr is a Series
+    df_cd_rake['cd_rake'] = df_cd_rake['cd_rake'] * (1 - 2 * lambda_series * (sigma_wall_corr + xi_wall_corr))
+    
+    return df_cd_rake
+
+def plot(df, start_time, end_time, column_name_x, column_name_y):
+    """
+    generates plots of pandas DataFrame containing Time in row index and the specified column name in 
+    parameter column_name between specified time interval
+    :param df:                  pandas dataframe
+    :param start_time:          time at which plot begins
+    :param start_time:          time at which plot ends
+    :param column_name_x:       this column name will be plotted on x axis (if time: enter 'time')
+    :param column_name_y:       this column name will be plotted on y axis
+    :return:1                   placeholder return value
+    """
+    # Filter the DataFrame based on the start and end times
+    if start_time is not None:
+        df = df[df.index >= start_time]
+    if end_time is not None:
+        df = df[df.index <= end_time]
+        
+    # Plotting with Matplotlib
+    plt.figure(figsize=(12, 6))
+    if column_name_x == 'time':
+        plt.plot(df.index, df[column_name_y], label=column_name_y, color='blue')
+    else:
+        plt.plot(df[column_name_x], df[column_name_y], label=column_name_y, color='blue')
+    
+    # Calculate the mean value of the filtered DataFrame
+    mean_value = df[column_name_y].mean()
+    # Add a horizontal line for the mean value
+    plt.axhline(mean_value, color='red', linestyle='--', label=f'Mean Value: {mean_value:.2f}')
+    
+    # Adding titles and labels
+    if column_name_x == 'time':
+        plt.title(f'{column_name_y} vs Time')
+        plt.xlabel('Time')
+    else:
+        plt.title(f'{column_name_y} vs {column_name_x}')
+        plt.xlabel(f'{column_name_y}')
+    
+    plt.ylabel(column_name_y)
+    plt.legend()
+    
+    # Display the plot
+    plt.show()
+    
+    return 1
+
+def plot_cl_cd_rake(df_cl_cd, df_cd_rake, start_time, end_time):
+    """
+    specialized plot method to generate plot of pandas DataFrames; one containing cl, the other cd_rake between specified time interval
+    :param df_cl_cd:            pandas dataframe containing 'cl' column
+    :param df_cd_rake:          pandas dataframe containing 'cd_rake' column
+    :param start_time:          time at which plot begins
+    :param start_time:          time at which plot ends
+    :return:1                   placeholder return value
+    """
+    # Filter the DataFrame based on the start and end times for df_cl_cd
+    if start_time is not None:
+        df_cl_cd = df_cl_cd[df_cl_cd.index >= start_time]
+    if end_time is not None:
+        df_cl_cd = df_cl_cd[df_cl_cd.index <= end_time]
+    # Filter the DataFrame based on the start and end times for df_cd_rake
+    if start_time is not None:
+        df_cd_rake = df_cd_rake[df_cd_rake.index >= start_time]
+    if end_time is not None:
+        df_cd_rake = df_cd_rake[df_cd_rake.index <= end_time]
+        
+    # Plotting with Matplotlib
+    plt.figure(figsize=(12, 6))
+    plt.plot(df_cl_cd['cl'], df_cd_rake['cd_rake'], label='cl', color='blue')
+    
+    # Adding titles and labels
+    plt.title('cl vs cw_rake')
+    plt.xlabel('cw_rake')
+    plt.ylabel('cl')
+    plt.legend()
+    
+    # Display the plot
+    plt.show()
+    
+    return 1
+
+def plot_cl_alpha(df_cl_cd, df_sync, start_time, end_time):
+    """
+    specialized plot method to generate plot of pandas DataFrames; one containing cl, the other alpha between specified time interval
+    :param df_cl_cd:            pandas dataframe containing 'cl' column
+    :param df_cd_rake:          pandas dataframe containing 'cd_rake' column
+    :param start_time:          time at which plot begins
+    :param start_time:          time at which plot ends
+    :return:1                   placeholder return value
+    """
+    # Filter the DataFrame based on the start and end times for df_cl_cd
+    if start_time is not None:
+        df_cl_cd = df_cl_cd[df_cl_cd.index >= start_time]
+    if end_time is not None:
+        df_cl_cd = df_cl_cd[df_cl_cd.index <= end_time]
+    # Filter the DataFrame based on the start and end times for df_cd_rake
+    if start_time is not None:
+        df_sync = df_sync[df_sync.index >= start_time]
+    if end_time is not None:
+        df_sync = df_sync[df_sync.index <= end_time]
+        
+    # Plotting with Matplotlib
+    plt.figure(figsize=(12, 6))
+    plt.plot(df_cl_cd['cl'], df_sync['Alpha'], label='cl', color='blue')
+    
+    # Adding titles and labels
+    plt.title('cl vs alpha')
+    plt.xlabel('alpha')
+    plt.ylabel('cl')
+    plt.legend()
+    
+    # Display the plot
+    plt.show()
+    
+    return 1
+
+def calc_wall_correction_coefficients(df_airfoil, df_cp):
+    """
+    calculate wall correction coefficients according to
+    Abbott and van Doenhoff 1945: Theory of Wing Sections
+    and
+    Althaus 2003: Tunnel-Wall Corrections at the Laminar Wind Tunnel
+    :param df_x_yt_cpt: pandas DataFrame with x, yt, and cp values of decambered airfoil
+    :return:
+    """
+
+    # model - wall distances:
+    d1 = 0.7
+    d2 = 1.582
+    
+    # drop ptot and pstat columns and transpose df_airfoil 
+    df_airfoil = df_airfoil.drop(columns=['pstat', 'ptot'])
+    df_airfoil = df_airfoil.T
+    df_airfoil = df_airfoil.drop(columns=['name', 'inop sensors', 'port', 'sensor unit'])
+    df_airfoil = df_airfoil / 1000
+
+    # calculate surface contour gradient dy_t/dx as finite difference scheme. first and last value are calculated
+    # with forward and backward difference scheme, respectively and all other values with central difference
+    # scheme
+    dyt_dx = np.zeros(len(df_airfoil.index))
+    dyt_dx[0] = (df_airfoil["y [mm]"].iloc[1] - df_airfoil["y [mm]"].iloc[0]) / \
+                (df_airfoil["x [mm]"].iloc[1] - df_airfoil["x [mm]"].iloc[0])
+    dyt_dx[-1] = (df_airfoil["y [mm]"].iloc[-1] - df_airfoil["y [mm]"].iloc[-2]) / \
+                    (df_airfoil["x [mm]"].iloc[-1] - df_airfoil["x [mm]"].iloc[-2])
+    dyt_dx[1:-1] = (df_airfoil["y [mm]"].iloc[2:].values - df_airfoil["y [mm]"].iloc[:-2].values) / \
+                      (df_airfoil["x [mm]"].iloc[2:].values - df_airfoil["x [mm]"].iloc[:-2].values)
+    # calculate v/V_inf
+    v_V_inf = np.sqrt(abs(1 - df_cp.values))
+
+    # calculate lambda (warning: Lambda of Althaus is erroneus, first y factor forgotten)
+    lambda_wall_corr = integrate.simpson(y=16/np.pi*df_airfoil["y [mm]"].values*v_V_inf *np.sqrt(1 + dyt_dx**2), x=df_airfoil["x [mm]"].values)
+    lambda_wall_corr = pd.DataFrame(lambda_wall_corr, columns=['lambda'])
+    lambda_wall_corr.index = df_cp.index
+
+    # calculate sigma
+    sigma_wall_corr = np.pi**2 / 48 * (l_ref/1000)**2 * 1/2 * (1/(2*d1) + 1/(2*d2))**2
+
+    # correction for model influence on static reference pressure
+    # TODO: Re-calculate this using a panel method or with potential flow theory
+    xi_wall_corr = -0.00335 * (l_ref/1000)**2
+    
+    return lambda_wall_corr, sigma_wall_corr, xi_wall_corr
+
+ 
+
+
     
     
-    #return df_rake_cd
+
 
 
 
@@ -366,12 +556,17 @@ if __name__ == '__main__':
     df_sync_stat_sort = sort_sync_data(df_airfoil, df_sync)
     df_cp = calc_cp(df_sync_stat_sort)
     df_cn_ct = calc_cn_ct(df_cp, df_airfoil, t=499)
-    df_ca_cw = calc_ca_cw(df_cn_ct, df_sync)
-    #plot(df_ca_cw, start_time, end_time, 'ca')
-    #plot(df_ca_cw, start_time, end_time, 'cw')
-    #df_sync_filtered = interpolate_rake(df_sync, df_sync_stat_sort)
-    #df_rake_cd = calc_rake_cd(df_sync_filtered)
+    lambda_wall_corr, sigma_wall_corr, xi_wall_corr = calc_wall_correction_coefficients(df_airfoil, df_cp)
+    df_cl_cd = calc_cl_cd(df_cn_ct, df_sync)
     df_sync_rake_sort = sort_rake_data(df_sync, num_columns=32)
+    df_cd_rake = calc_rake_cd(df_sync_rake_sort, lambda_wall_corr, sigma_wall_corr, xi_wall_corr)
+    #plot(df_cl_cd, start_time, end_time, 'time', 'cl')
+    #plot(df_cl_cd, start_time, end_time, 'time', 'cd')
+    plot(df_cd_rake, start_time, end_time, 'time', 'cd_rake')
+    #plot(df_cl_cd, start_time, end_time, 'cd_stat', 'cl')
+    #plot_cl_cd_rake(df_cl_cd, df_cd_rake, start_time, end_time)
+    #plot_cl_alpha(df_cl_cd, df_sync, start_time, end_time)
+    
     
 
     
