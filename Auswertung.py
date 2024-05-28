@@ -5,6 +5,7 @@ Created on Mon Apr 29 11:21:04 2024
 @author: Besitzer
 """
 import sys
+import os
 import pickle
 import numpy as np
 import pandas as pd
@@ -117,7 +118,7 @@ def synchronize_data(merge_dfs_list):
 
     return interpolated_df
 
-def read_airfoil_geometry(filename, c, foil_source):
+def read_airfoil_geometry(filename, c, foil_source, eta_flap, pickle_file=""):
     """
     -> generates a DataFrame with the x and y positions of the measuring points from Excel
     -> adds assignment of sensor unit + port to measuring point from Excel
@@ -128,38 +129,50 @@ def read_airfoil_geometry(filename, c, foil_source):
     :param filename:            file name of Excel eg. "Messpunkte Demonstrator.xlsx".
     :param c:                   airfoil chord length
     :param foil_source:         string, path of airfoil coordinate file
+    :param eta_flap:            flap deflection angle
+    :param pickle_file:         path to pickle file with airfoil information
     :return df_airfoil:         DataFrame with info described above
     """
 
-    # initialize airfoilTools object
-    foil = at.Airfoil(foil_source)
-    
-    # Read column C for x-Positions
-    df = pd.read_excel(filename, usecols="A:F", skiprows=1, skipfooter=1)# Read the Excel file
-    df = df.dropna(subset=['Sensor unit K', 'Sensor port'])
-    df = df.drop(df[df["Kommentar"] == "inop"].index).reset_index(drop=True)
-    df = df.astype({'Messpunkt': 'int32', 'Sensor unit K': 'int32', 'Sensor port': 'int32'})
+    if os.path.exists(pickle_file):
+        with open(pickle_file, 'rb') as file:
+            df, eta_flap_read = pickle.load(file)
 
-    df["s"] = df["Position [mm]"]/c
-    df["x"] = np.nan
-    df["y"] = np.nan
+    if not os.path.exists(pickle_file) or eta_flap_read != eta_flap:
+        # initialize airfoilTools object
+        foil = at.Airfoil(foil_source)
+        # if eta_flap != 0.0:
+        #     foil.flap(xFlap=0.8, yFlap=0, etaFlap=15)
 
-    df["x_n"] = np.nan
-    df["y_n"] = np.nan
+        # Read Excel file
+        df = pd.read_excel(filename, usecols="A:F", skiprows=1, skipfooter=1)# Read the Excel file
+        df = df.dropna(subset=['Sensor unit K', 'Sensor port'])
+        df = df.drop(df[df["Kommentar"] == "inop"].index).reset_index(drop=True)
+        df = df.astype({'Messpunkt': 'int32', 'Sensor unit K': 'int32', 'Sensor port': 'int32'})
+
+        df["s"] = df["Position [mm]"]/c
+        df["x"] = np.nan
+        df["y"] = np.nan
+
+        df["x_n"] = np.nan
+        df["y_n"] = np.nan
 
 
-    u_taps = np.zeros(len(df.index))
+        u_taps = np.zeros(len(df.index))
 
-    for i, s in enumerate(df["s"]):
-        res = optimize.root_scalar(at.s_curve, args=(foil.tck, s), x0=0, fprime=at.ds)
-        u_taps[i] = res.root
-        coords_tap = interpolate.splev(u_taps[i], foil.tck)
-        df["x"].iloc[i] = coords_tap[0]
-        df["y"].iloc[i] = coords_tap[1]
-        n_tap = np.dot(at.tangent(u_taps[i], foil.tck)[0], np.array([[0, -1], [1, 0]]))
-        df["x_n"].iloc[i] = n_tap[0]
-        df["y_n"].iloc[i] = n_tap[1]
+        for i, s in enumerate(df["s"]):
+            res = optimize.root_scalar(at.s_curve, args=(foil.tck, s), x0=0, fprime=at.ds)
+            u_taps[i] = res.root
+            coords_tap = interpolate.splev(u_taps[i], foil.tck)
+            df.loc["x", i] = coords_tap[0]
+            df.loc["y", i] = coords_tap[1]
+            n_tap = np.dot(at.tangent(u_taps[i], foil.tck)[0], np.array([[0, -1], [1, 0]]))
+            df.loc["x_n", i] = n_tap[0]
+            df.loc["y_n", i] = n_tap[1]
 
+        if pickle_file != "":
+            with open(pickle_file, 'wb') as file:
+                pickle.dump([df, eta_flap], file)
 
     return df
 
@@ -532,6 +545,7 @@ if __name__ == '__main__':
     file_path_ptot_rake = '20230804-235818_ptot_rake.dat'
     file_path_pstat_rake = '20230804-235818_pstat_rake.dat'
     file_path_airfoil = 'Messpunkte Demonstrator.xlsx'
+    pickle_path_airfoil = 'Messpunkte Demonstrator.p'
 
     start_time = "2023-08-04 21:58:19"
     end_time = "2023-08-04 21:58:49"
@@ -546,7 +560,8 @@ if __name__ == '__main__':
     ptot_rake = read_DLR_pressure_scanner_file(file_path_ptot_rake, n_sens=32, t0=alphas["Time"].iloc[0])
     pstat_rake = read_DLR_pressure_scanner_file(file_path_pstat_rake, n_sens=5, t0=alphas["Time"].iloc[0])
     df_sync = synchronize_data([pstat_K02, pstat_K03, pstat_K04, ptot_rake,pstat_rake, alphas])
-    df_airfoil = read_airfoil_geometry(file_path_airfoil, c=l_ref, foil_source=foil_coord_path)
+    df_airfoil = read_airfoil_geometry(file_path_airfoil, c=l_ref, foil_source=foil_coord_path,
+                                       eta_flap = 0.0, pickle_file=pickle_path_airfoil)
     df_sync_stat_sort = sort_sync_data(df_airfoil, df_sync)
     df_cp = calc_cp(df_sync_stat_sort)
     df_cn_ct = calc_cn_ct(df_cp, df_airfoil)
