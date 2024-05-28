@@ -4,6 +4,8 @@ Created on Mon Apr 29 11:21:04 2024
 
 @author: Besitzer
 """
+import sys
+import pickle
 import numpy as np
 import pandas as pd
 import math
@@ -11,10 +13,10 @@ from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 from scipy.integrate import simps
 from scipy import interpolate, integrate, optimize, signal
+#sys.path.append("/put_airfoilwinggeometry_source_here/")
+from airfoilwinggeometry.AirfoilPackage import AirfoilTools as at
 
-start_time = "2023-08-04 21:58:19"
-end_time = "2023-08-04 21:58:49"
-l_ref = 500 #[mm]
+
 
 
 
@@ -115,7 +117,7 @@ def synchronize_data(merge_dfs_list):
 
     return interpolated_df
 
-def read_airfoil_geometry(filename, n_mp):
+def read_airfoil_geometry(filename, c, foil_source):
     """
     -> generates a DataFrame with the x and y positions of the measuring points from Excel
     -> adds assignment of sensor unit + port to measuring point from Excel
@@ -124,57 +126,42 @@ def read_airfoil_geometry(filename, n_mp):
     -> renames last two columns for pstat and ptot assignment (always last two rows in Excel)
     -> generates a new row with sensor names as labeled in column index of df_sync
     :param filename:            file name of Excel eg. "Messpunkte Demonstrator.xlsx".
-    :param n_mp:                number of measuring points on airfoil (inop sensors inclusively)
+    :param c:                   airfoil chord length
+    :param foil_source:         string, path of airfoil coordinate file
     :return df_airfoil:         DataFrame with info described above
     """
-    
-    # name of the columns (mp=measuring point)
-    columns = ['mp' + f"_{i}" for i in range(1, n_mp+1)]
+
+    # initialize airfoilTools object
+    foil = at.Airfoil(foil_source)
     
     # Read column C for x-Positions
-    df_x = pd.read_excel(filename, usecols="C", skiprows=3, nrows=97, header=None)# Read the Excel file from C2 to C99
-    df_x = df_x.T # Transpose the data to make it a single row
-    df_x.columns = columns # Rename the columns to match the layout of df_sync
-    df_x.index = ['x [mm]'] # Rename index
-    
-    # Read column D for y-Positions
-    df_y = pd.read_excel(filename, usecols="D", skiprows=3, nrows=97, header=None)
-    df_y = df_y.T
-    df_y.columns = columns
-    df_y.index = ['y [mm]']
-    
-    # Read columns E and F for sensor unit and port
-    df_unit = pd.read_excel(filename, usecols="E", skiprows=3, nrows=97, header=None).T
-    df_unit.columns = columns
-    df_unit.index = ['sensor unit']
-    df_port = pd.read_excel(filename, usecols="F", skiprows=3, nrows=97, header=None).T
-    df_port.columns = columns
-    df_port.index = ['port']
-    
-    # Read column G for inop sensors
-    df_inop = pd.read_excel(filename, usecols="G", skiprows=3, nrows=97, header=None).T
-    df_inop.columns = columns
-    df_inop.index = ['inop sensors']
-    
-    df_airfoil = pd.concat([df_x, df_y, df_unit, df_port, df_inop])
+    df = pd.read_excel(filename, usecols="A:F", skiprows=1, skipfooter=1)# Read the Excel file
+    df = df.dropna(subset=['Sensor unit K', 'Sensor port'])
+    df = df.drop(df[df["Kommentar"] == "inop"].index).reset_index(drop=True)
+    df = df.astype({'Messpunkt': 'int32', 'Sensor unit K': 'int32', 'Sensor port': 'int32'})
 
-    # drops sensors with 'inop' status
-    df_airfoil = df_airfoil.drop(columns=df_airfoil.columns[df_airfoil.eq('inop').any()])
-    num_cols = len(df_airfoil.columns)
-    new_columns = ['mp_' + str(i + 1) for i in range(num_cols)] # renames the columns
-    df_airfoil.columns = new_columns # assign the new column names
-    
-    # Rename pstat and ptot column
-    column_pstat = df_airfoil.columns[-2]
-    column_ptot = df_airfoil.columns[-1]
-    df_airfoil.rename(columns={column_pstat:'pstat'}, inplace=True)
-    df_airfoil.rename(columns={column_ptot:'ptot'}, inplace=True)
+    df["s"] = df["Position [mm]"]/c
+    df["x"] = np.nan
+    df["y"] = np.nan
 
-    # generates name in format of df_sync column index in a new row
-    new_row = ['static_K0' + str(int(row3)) + '_' + str(int(row4)) for row3, row4 in zip(df_airfoil.iloc[2], df_airfoil.iloc[3])]
-    df_airfoil.loc[len(df_airfoil)] = new_row
-    df_airfoil.rename(index={df_airfoil.index[-1]: 'name'}, inplace = True) # name the row
-    return df_airfoil
+    df["x_n"] = np.nan
+    df["y_n"] = np.nan
+
+
+    u_taps = np.zeros(len(df.index))
+
+    for i, s in enumerate(df["s"]):
+        res = optimize.root_scalar(at.s_curve, args=(foil.tck, s), x0=0, fprime=at.ds)
+        u_taps[i] = res.root
+        coords_tap = interpolate.splev(u_taps[i], foil.tck)
+        df["x"].iloc[i] = coords_tap[0]
+        df["y"].iloc[i] = coords_tap[1]
+        n_tap = np.dot(at.tangent(u_taps[i], foil.tck)[0], np.array([[0, -1], [1, 0]]))
+        df["x_n"].iloc[i] = n_tap[0]
+        df["y_n"].iloc[i] = n_tap[1]
+
+
+    return df
 
 def sort_sync_data(df_airfoil, df_sync):
     """
@@ -222,7 +209,7 @@ def calc_cp(df_sync_stat_sort):
 
         return df_cp
 
-def calc_cn_ct(df_cp, df_airfoil, t):
+def calc_cn_ct(df_cp, df_airfoil):
     """
     Calculates normal and tangential (based on airfoil chord) force coefficient. All information at certain 
     measuring points are integrated to one value. Equations from Döller page 40
@@ -231,6 +218,7 @@ def calc_cn_ct(df_cp, df_airfoil, t):
                                 on airfoil
     :return:df_cn_ct            merged dataframe with cn and ct coefficient at certain times
     """
+
     # Ensure the column indexes match (drops pstat and ptot column)
     df_cp = df_cp.iloc[:,:-2]
     columns = df_cp.columns.intersection(df_airfoil.columns)
@@ -255,9 +243,10 @@ def calc_cl_cd(df_cn_ct, df_sync):
     Equations from Döller page 41, applying wind tunnel correction according Althasus eq. 36
     :param df_cn_ct:        list of pandas DataFrames containing "cn" and "ct" column
     :param df_sync:         list of pandas DataFrames containing column "Alpha"
+
     :return: df_cl_cd:      merged dataframe with lift and drag coefficient at certain times
     """
-   
+
     alpha = df_sync.loc[:, "Alpha"] # extracting the syncronized alpha column from df_sync
     cn = df_cn_ct.loc[:,"cn"]  # extracting the cn column from df_cn_ct
     ct = df_cn_ct.loc[:,"ct"]  # extracting the ct column from df_cn_ct
@@ -542,7 +531,12 @@ if __name__ == '__main__':
     file_path_pstat_K04 = '20230804-235818_static_K04.dat'
     file_path_ptot_rake = '20230804-235818_ptot_rake.dat'
     file_path_pstat_rake = '20230804-235818_pstat_rake.dat'
-    file_path_airfoil = 'Messpunkte_Demonstrator.xlsx'
+    file_path_airfoil = 'Messpunkte Demonstrator.xlsx'
+
+    start_time = "2023-08-04 21:58:19"
+    end_time = "2023-08-04 21:58:49"
+    l_ref = 500  # [mm]
+    foil_coord_path = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Data Brezn/01_Aerodynamic Design/01_Airfoil Optimization/B203/0969/B203-0.dat"
 
     alphas = read_AOA_file(file_path_AOA)
     alpha_mean = calc_mean(alphas, start_time, end_time)
@@ -552,10 +546,10 @@ if __name__ == '__main__':
     ptot_rake = read_DLR_pressure_scanner_file(file_path_ptot_rake, n_sens=32, t0=alphas["Time"].iloc[0])
     pstat_rake = read_DLR_pressure_scanner_file(file_path_pstat_rake, n_sens=5, t0=alphas["Time"].iloc[0])
     df_sync = synchronize_data([pstat_K02, pstat_K03, pstat_K04, ptot_rake,pstat_rake, alphas])
-    df_airfoil = read_airfoil_geometry(file_path_airfoil, n_mp=97)
+    df_airfoil = read_airfoil_geometry(file_path_airfoil, c=l_ref, foil_source=foil_coord_path)
     df_sync_stat_sort = sort_sync_data(df_airfoil, df_sync)
     df_cp = calc_cp(df_sync_stat_sort)
-    df_cn_ct = calc_cn_ct(df_cp, df_airfoil, t=499)
+    df_cn_ct = calc_cn_ct(df_cp, df_airfoil)
     lambda_wall_corr, sigma_wall_corr, xi_wall_corr = calc_wall_correction_coefficients(df_airfoil, df_cp)
     df_cl_cd = calc_cl_cd(df_cn_ct, df_sync)
     df_sync_rake_sort = sort_rake_data(df_sync, num_columns=32)
