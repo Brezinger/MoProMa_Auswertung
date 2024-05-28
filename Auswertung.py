@@ -14,7 +14,7 @@ from scipy import interpolate, integrate, optimize, signal
 
 start_time = "2023-08-04 21:58:19"
 end_time = "2023-08-04 21:58:49"
-l_ref = 700 #[mm]
+l_ref = 500 #[mm]
 
 
 
@@ -560,12 +560,12 @@ if __name__ == '__main__':
     df_cl_cd = calc_cl_cd(df_cn_ct, df_sync)
     df_sync_rake_sort = sort_rake_data(df_sync, num_columns=32)
     df_cd_rake = calc_rake_cd(df_sync_rake_sort, lambda_wall_corr, sigma_wall_corr, xi_wall_corr)
-    #plot(df_cl_cd, start_time, end_time, 'time', 'cl')
-    #plot(df_cl_cd, start_time, end_time, 'time', 'cd')
+    plot(df_cl_cd, start_time, end_time, 'time', 'cl')
+    plot(df_cl_cd, start_time, end_time, 'time', 'cd_stat')
     plot(df_cd_rake, start_time, end_time, 'time', 'cd_rake')
-    #plot(df_cl_cd, start_time, end_time, 'cd_stat', 'cl')
-    #plot_cl_cd_rake(df_cl_cd, df_cd_rake, start_time, end_time)
-    #plot_cl_alpha(df_cl_cd, df_sync, start_time, end_time)
+    plot(df_cl_cd, start_time, end_time, 'cd_stat', 'cl')
+    plot_cl_cd_rake(df_cl_cd, df_cd_rake, start_time, end_time)
+    plot_cl_alpha(df_cl_cd, df_sync, start_time, end_time)
     
     
 
