@@ -102,7 +102,7 @@ def synchronize_data(merge_dfs_list):
     Syncronizes and interpolates sensor data, given in pandas DataFrames with a timestamp
     :param merge_dfs_list:      list of pandas DataFrames containing sensor data. Must contain "Time" column in
                                 datetime format
-    :return:                    merged dataframe with all sensor data, interpolated according time
+    :return: merged_df          merged dataframe with all sensor data, interpolated according time
     """
 
     # Merge the DataFrames using merge_asof
@@ -114,9 +114,9 @@ def synchronize_data(merge_dfs_list):
     merged_df.set_index('Time', inplace=True)
 
     # Interpolate missing values using time-based interpolation
-    interpolated_df = merged_df.interpolate(method='time')
+    merged_df = merged_df.interpolate(method='time')
 
-    return interpolated_df
+    return merged_df
 
 def read_airfoil_geometry(filename, c, foil_source, eta_flap, pickle_file=""):
     """
@@ -141,8 +141,8 @@ def read_airfoil_geometry(filename, c, foil_source, eta_flap, pickle_file=""):
     if not os.path.exists(pickle_file) or eta_flap_read != eta_flap:
         # initialize airfoilTools object
         foil = at.Airfoil(foil_source)
-        # if eta_flap != 0.0:
-        #     foil.flap(xFlap=0.8, yFlap=0, etaFlap=15)
+        if eta_flap != 0.0:
+            foil.flap(xFlap=0.8, yFlap=0, etaFlap=15)
 
         # Read Excel file
         df = pd.read_excel(filename, usecols="A:F", skiprows=1, skipfooter=1)# Read the Excel file
@@ -164,11 +164,11 @@ def read_airfoil_geometry(filename, c, foil_source, eta_flap, pickle_file=""):
             res = optimize.root_scalar(at.s_curve, args=(foil.tck, s), x0=0, fprime=at.ds)
             u_taps[i] = res.root
             coords_tap = interpolate.splev(u_taps[i], foil.tck)
-            df.loc["x", i] = coords_tap[0]
-            df.loc["y", i] = coords_tap[1]
+            df.loc[i, "x"] = coords_tap[0]
+            df.loc[i, "y"] = coords_tap[1]
             n_tap = np.dot(at.tangent(u_taps[i], foil.tck)[0], np.array([[0, -1], [1, 0]]))
-            df.loc["x_n", i] = n_tap[0]
-            df.loc["y_n", i] = n_tap[1]
+            df.loc[i, "x_n"] = n_tap[0]
+            df.loc[i, "y_n"] = n_tap[1]
 
         if pickle_file != "":
             with open(pickle_file, 'wb') as file:
@@ -176,68 +176,73 @@ def read_airfoil_geometry(filename, c, foil_source, eta_flap, pickle_file=""):
 
     return df
 
-def sort_sync_data(df_airfoil, df_sync):
+def calc_cp(df, prandtl_data, pressure_data_ident_strings):
     """
-    -> brings columns of df_sync in order of measuring points of airfoil as assigned in df_airfoil 
-    -> the last two columns are pstat and ptot of pitotstatic measurement unit
-    :param df_airfoil:          any pandas DataFrame containing string names of sensor ports as found in index 
-                                of df_sync
-    :param df_sync:             any pandas DataFrame containing string names of sensor ports in index and sensor 
-                                pressures as values                      
-    :return df_sync_sort:       static pressure in order of measuring points of airfoil (reordered, synchronized DataFrame)
+    calculates for each static port on airfoil pressure coefficient
+    :param df:                          pandas DataFrame with synchronized and interpolated measurement data
+    :param prandtl_data:                dict with "unit name static", "i_sens_static", "unit name total" and
+                                        "i_sens_total".
+                                        This specifies the sensor units and the index of the sensors of the Prandtl
+                                        probe total
+                                        pressure sensor and the static pressure sensor
+    :param pressure_data_ident_strings: list of strings, which are contained in column names, which identify
+                                        pressure sensor data
+    :return: df                         pandas DataFrame with pressure coefficient in "static_K0X_Y" columns for
+                                        every
+                                        measuring point
     """
-    # cuts for this operation useless rows in df_airfoil
-    df_airfoil=df_airfoil.iloc[5:]
-    # brings static pressure in order of measuring points of airfoil
-    df_sync_sort = df_sync.reindex(columns=df_airfoil.values[0])
-    
-    #rename column index
-    mp_names = [f'mp_{i+1}' for i in range(len(df_sync_sort.columns))]
-    df_sync_sort.columns = mp_names
-    
-    # rename pstat and ptot column
-    column_pstat = df_sync_sort.columns[-2]
-    column_ptot = df_sync_sort.columns[-1]
-    df_sync_sort.rename(columns={column_pstat:'pstat'}, inplace=True)
-    df_sync_sort.rename(columns={column_ptot:'ptot'}, inplace=True)
 
-    return df_sync_sort
+    colname_total = prandtl_data['unit name total'] + '_' + str(prandtl_data['i_sens_total'])
+    colname_static = prandtl_data['unit name static'] + '_' + str(prandtl_data['i_sens_static'])
+    ptot = df[colname_total]
+    pstat = df[colname_static]
 
-def calc_cp(df_sync_stat_sort):
-        """
-        calculates for each static port on airfoil pressure coefficient
-        :param sync_stat_sort:      synchronized and sorted DataFrame with static pressure data ("static_K0X_Y")
-        :return: df_cp              pandas DataFrame with pressure coefficient in "static_K0X_Y" columns for every
-                                    measuring point
-        """
-        # searchs for column names starting with 'mp_' (=static airfoil pressures)
-        columns_to_transform = [col for col in df_sync_stat_sort.columns if col.startswith('mp_')]
-        
-        ptot = df_sync_stat_sort['ptot']
-        pstat = df_sync_stat_sort['pstat']
-        # Initialize an empty DataFrame with the same index as df_sync_stat_sort
-        df_cp = pd.DataFrame(index=df_sync_stat_sort.index)
-        # calculates cp values for adressed columns
-        df_cp[columns_to_transform] = df_sync_stat_sort[columns_to_transform].apply(lambda x: 1 - (ptot - x) / (ptot - pstat), axis=0)
+    # column names of all pressure sensor data
+    pressure_cols = []
+    for string in pressure_data_ident_strings:
+        pressure_cols += [col for col in df.columns if string in col]
 
-        return df_cp
+    df[pressure_cols] = df[pressure_cols].apply(lambda p_col: (p_col - pstat)/(ptot - pstat))
 
-def calc_cn_ct(df_cp, df_airfoil):
+    df.replace([np.inf, -np.inf], 0., inplace=True)
+
+    return df
+
+def calc_cl_cm_cdp(df, df_airfoil):
     """
     Calculates normal and tangential (based on airfoil chord) force coefficient. All information at certain 
     measuring points are integrated to one value. Equations from Döller page 40
-    :param df_cp:               list of pandas DataFrames containing cp values 
-    :param df_airfoil:          list of pandas DataFrames containing rows of x and y positions of measuring points
+    :param df:                  list of pandas DataFrames containing cp values
+    :param df_airfoil:          list of pandas DataFrames containing columns of x_n and y_n normal vectors of measuring points
                                 on airfoil
-    :return:df_cn_ct            merged dataframe with cn and ct coefficient at certain times
+    :return:df_cl_cm_cdp        merged dataframe with cn and ct coefficient at certain times
     """
 
+    # calculate tap normal vector components on airfoil surface projected to aerodynamic coordinate system
+    n_proj_z = np.dot(df_airfoil[['x_n', 'y_n']].to_numpy(), np.array([-np.sin(np.deg2rad(df['Alpha'])),
+                                             np.cos(np.deg2rad(df['Alpha']))])).T
+    n_proj_x = np.dot(df_airfoil[['x_n', 'y_n']].to_numpy(), np.array([np.cos(np.deg2rad(df['Alpha'])),
+                                             np.sin(np.deg2rad(df['Alpha']))])).T
+
+    # assign tap index to sensor unit and sensor port
+    sens_ident_cols = ["static_K0{0:d}_{1:d}".format(df_airfoil.loc[i, "Sensor unit K"], df_airfoil.loc[i, "Sensor port"]) for i in df_airfoil.index]
+
+    # create results dataframe
+    df_res = pd.DataFrame(index=df.index)
+
+    df["cl"] = -integrate.simpson(df[sens_ident_cols] * n_proj_z, x=df_airfoil['s'])
+
+
+    """fig, ax = plt.subplots()
+    ax.plot(df_airfoil["x"], df_airfoil["y"], "k-")
+    ax.plot(df_airfoil["x"], -df[sens_ident_cols].iloc[15000], "b.-")
+    plt.axis("equal")"""
     # Ensure the column indexes match (drops pstat and ptot column)
-    df_cp = df_cp.iloc[:,:-2]
-    columns = df_cp.columns.intersection(df_airfoil.columns)
+    df = df.iloc[:, :-2]
+    columns = df.columns.intersection(df_airfoil.columns)
     
     # Extract relevant data from both dataframes
-    cp = df_cp[columns]
+    cp = df[columns]
     x = df_airfoil.loc["x [mm]", columns]
     y = df_airfoil.loc["y [mm]", columns]
     # calculate cn
@@ -248,7 +253,7 @@ def calc_cn_ct(df_cp, df_airfoil):
     # Create a result dataframe with cn values
     df_cn_ct = pd.DataFrame({'cn': cn_values, 'ct': ct_values})
     
-    return df_cn_ct
+    return df_cl_cm_cdp
 
 def calc_cl_cd(df_cn_ct, df_sync):
     """
@@ -527,6 +532,26 @@ def calc_wall_correction_coefficients(df_airfoil, df_cp):
     
     return lambda_wall_corr, sigma_wall_corr, xi_wall_corr
 
+def calc_U_CAS(df, prandtl_data):
+    """
+
+    :param df:
+    :param prandtl_data:
+    :return:
+    """
+
+    colname_total = prandtl_data['unit name total'] + '_' + str(prandtl_data['i_sens_total'])
+    colname_static = prandtl_data['unit name static'] + '_' + str(prandtl_data['i_sens_static'])
+    ptot = df[colname_total]
+    pstat = df[colname_static]
+
+    # density of air according to International Standard Atmosphere (ISA)
+    rho_ISA = 1.225
+
+    df['U_CAS'] = np.sqrt(2 * (ptot-pstat) / rho_ISA)
+    return df
+
+
  
 
 
@@ -537,21 +562,35 @@ def calc_wall_correction_coefficients(df_airfoil, df_cp):
 
 
 if __name__ == '__main__':
-    file_path_drive = '20230804-235819_drive.dat'
-    file_path_AOA = '20230804-235818_AOA.dat'
-    file_path_pstat_K02 = '20230804-235818_static_K02.dat'
-    file_path_pstat_K03 = '20230804-235818_static_K03.dat'
-    file_path_pstat_K04 = '20230804-235818_static_K04.dat'
-    file_path_ptot_rake = '20230804-235818_ptot_rake.dat'
-    file_path_pstat_rake = '20230804-235818_pstat_rake.dat'
-    file_path_airfoil = 'Messpunkte Demonstrator.xlsx'
-    pickle_path_airfoil = 'Messpunkte Demonstrator.p'
+
+    if os.getlogin() == 'joeac':
+        WDIR = "C:/WDIR/MoProMa_Auswertung/"
+    else:
+        WDIR = ""
+
+
+
+    file_path_drive = os.path.join(WDIR, '20230926-1713_drive.dat')
+    file_path_AOA = os.path.join(WDIR,  '20230926-1713_AOA.dat')
+    file_path_pstat_K02 = os.path.join(WDIR,  '20230926-1713_static_K02.dat')
+    file_path_pstat_K03 = os.path.join(WDIR,  '20230926-1713_static_K03.dat')
+    file_path_pstat_K04 = os.path.join(WDIR,  '20230926-1713_static_K04.dat')
+    file_path_ptot_rake = os.path.join(WDIR,  '20230926-1713_ptot_rake.dat')
+    file_path_pstat_rake = os.path.join(WDIR,  '20230926-1713_pstat_rake.dat')
+    file_path_airfoil = os.path.join(WDIR,  'Messpunkte Demonstrator.xlsx')
+    pickle_path_airfoil = os.path.join(WDIR,  'Messpunkte Demonstrator.p')
+
+    prandtl_data = {"unit name static": "static_K04", "i_sens_static": 31,
+                    "unit name total": "static_K04", "i_sens_total": 32}
 
     start_time = "2023-08-04 21:58:19"
     end_time = "2023-08-04 21:58:49"
     l_ref = 500  # [mm]
     foil_coord_path = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Data Brezn/01_Aerodynamic Design/01_Airfoil Optimization/B203/0969/B203-0.dat"
 
+    os.chdir(WDIR)
+
+    # Read all sensor data
     alphas = read_AOA_file(file_path_AOA)
     alpha_mean = calc_mean(alphas, start_time, end_time)
     pstat_K02 = read_DLR_pressure_scanner_file(file_path_pstat_K02, n_sens=32, t0=alphas["Time"].iloc[0])
@@ -560,11 +599,17 @@ if __name__ == '__main__':
     ptot_rake = read_DLR_pressure_scanner_file(file_path_ptot_rake, n_sens=32, t0=alphas["Time"].iloc[0])
     pstat_rake = read_DLR_pressure_scanner_file(file_path_pstat_rake, n_sens=5, t0=alphas["Time"].iloc[0])
     df_sync = synchronize_data([pstat_K02, pstat_K03, pstat_K04, ptot_rake,pstat_rake, alphas])
-    df_airfoil = read_airfoil_geometry(file_path_airfoil, c=l_ref, foil_source=foil_coord_path,
-                                       eta_flap = 0.0, pickle_file=pickle_path_airfoil)
-    df_sync_stat_sort = sort_sync_data(df_airfoil, df_sync)
-    df_cp = calc_cp(df_sync_stat_sort)
-    df_cn_ct = calc_cn_ct(df_cp, df_airfoil)
+    df_airfoil = read_airfoil_geometry(file_path_airfoil, c=l_ref, foil_source=foil_coord_path, eta_flap=0.0,
+                                       pickle_file=pickle_path_airfoil)
+
+    # calculate airspeed
+    df_sync = calc_U_CAS(df_sync, prandtl_data)
+
+    # calculate pressure coefficients
+    df_sync = calc_cp(df_sync, prandtl_data, pressure_data_ident_strings=['stat', 'ptot'])
+
+    # calculate lift coefficients
+    cl = calc_cl_cm_cdp(df_sync, df_airfoil)
     lambda_wall_corr, sigma_wall_corr, xi_wall_corr = calc_wall_correction_coefficients(df_airfoil, df_cp)
     df_cl_cd = calc_cl_cd(df_cn_ct, df_sync)
     df_sync_rake_sort = sort_rake_data(df_sync, num_columns=32)
