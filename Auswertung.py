@@ -10,10 +10,11 @@ import pickle
 import numpy as np
 import pandas as pd
 import math
+from itertools import chain
 from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 from scipy.integrate import simps
-from scipy import interpolate, integrate, optimize, signal
+from scipy import interpolate, integrate, optimize, stats
 #sys.path.append("/put_airfoilwinggeometry_source_here/")
 from airfoilwinggeometry.AirfoilPackage import AirfoilTools as at
 
@@ -150,19 +151,29 @@ def read_DLR_pressure_scanner_file(filename, n_sens, t0):
     # generates final column name for DataFrame (time and static pressure sensor)
     columns = ["Time"] + [unit_name + f"_{i}" for i in range(1, n_sens+1)]
 
-    # loading data into DataFrame
-    df = pd.read_csv(filename, sep="\s+", header=None, names=columns, usecols=range(n_sens+1), on_bad_lines='skip',
-                     engine='python')
+    # loading data into DataFrame. First line is skipped by default, because data is usually incorrect
+    df = pd.read_csv(filename, sep="\s+", skiprows=1, header=None, on_bad_lines='skip')
+    # if not as many columns a number of sensors (+2 for time and timedelta columns), then raise an error
+    assert len(df.columns) == n_sens+2
+
+    # drop timedelta column
+    df = df.iloc[:, :-1]
+
+    # assign column names
+    df.columns = columns
 
     # drop lines with missing data
     df = df.dropna().reset_index(drop=True)
+
+    # remove outliers
+    df = df[(np.abs(stats.zscore(df)) < 3).all(axis=1)]
 
     # Calculate the time difference in milliseconds from the first row
     time_diff_ms = df['Time'] - df['Time'].iloc[0]
 
     # Add this difference to the start time (in milliseconds) and convert back to datetime
     df['Time'] = pd.to_datetime(start_time_ms + time_diff_ms, unit='ms')
-                
+
     return df
 
 def synchronize_data(merge_dfs_list):
@@ -221,7 +232,7 @@ def read_airfoil_geometry(filename, c, foil_source, eta_flap, pickle_file=""):
         df = df.drop(df[df["Kommentar"] == "inop"].index).reset_index(drop=True)
         df = df.astype({'Messpunkt': 'int32', 'Sensor unit K': 'int32', 'Sensor port': 'int32'})
 
-        df["s"] = df["Position [mm]"]/c
+        df["s"] = df["Position [mm]"]/(c*1000)
         df["x"] = np.nan
         df["y"] = np.nan
 
@@ -348,22 +359,89 @@ def calc_cl_cm_cdp(df, df_airfoil):
     ax.plot(df_airfoil["x"], -df[sens_ident_cols].iloc[15000], "b.-")
     plt.axis("equal")"""
 
-    return df
 
-def calc_cd(df, n_sens):
-
-
-    df_sensor_stat = df.filter(regex='^pstat_rake_')
-    int_columns = pd.DataFrame(np.nan, index=df_sensor_stat.index, columns=[f'{i}' for i in range(1, 28)])
-    df_sensor_stat = (pd.concat([df_sensor_stat, int_columns], axis=1))
-    z_stat = np.linspace(-h_stat / 2, h_stat / 2, n_sens, endpoint=True)
-    cp_stat_int = interpolate.interp1d(z_stat, df_sensor_stat, kind="linear"
-                                       , axis=1)
 
     return df
 
+def calc_cd(df, l_ref):
+    """
 
-def calc_wall_correction_coefficients(df_airfoil, df_cp):
+    :param df:
+    :return:
+    """
+
+    h_stat = 100
+    h_tot = 93
+
+    z_stat = np.linspace(-h_stat / 2, h_stat / 2, 5, endpoint=True)
+    z_tot = np.linspace(-h_tot / 2, h_tot / 2, 32, endpoint=True)
+    # it is assumed, that 0th sensor is defective (omit that value)
+    z_tot = z_tot[1:]
+
+    cp_stat_raw = df.filter(regex='^pstat_rake_').to_numpy()
+    cp_stat_int = interpolate.interp1d(z_stat, cp_stat_raw, kind="linear", axis=1)
+
+    cp_stat = cp_stat_int(z_tot)
+
+    cp_tot = df.filter(regex='^ptot_rake_').to_numpy()
+    # it is assumed, that 0th sensor is defective (omit that value)
+    cp_tot = cp_tot[:, 1:]
+
+    # Measurement of Proﬁle Drag by the Pitot-Traverse Method
+    d_cd_jones = 2 * np.sqrt(np.abs((cp_tot - cp_stat))) * (1 - np.sqrt(np.abs(cp_tot)))
+
+    # integrate integrand with simpson rule
+    cd = integrate.simpson(d_cd_jones, z_tot) * 1 / (l_ref*1000)
+
+    return cd
+
+def apply_calibration_offset(filename, df):
+
+    with open(pickle_path_calibration, "rb") as file:
+        calibr_data = pickle.load(file)
+
+    l_ref = calibr_data[6]
+
+    # flatten calibration data list, order like df pressure sensors
+    pressure_calibr_data = calibr_data[2] + calibr_data[3] + calibr_data[4] + calibr_data[1] + calibr_data[0]
+    # append zero calibration offsets for alpha, Lat/Lon, U_GPS and Drive
+    pressure_calibr_data += [0]*(len(df.columns) - len(pressure_calibr_data))
+
+    df_calibr_pressures = pd.DataFrame(data=[pressure_calibr_data], columns=df.columns)
+    # repeat calibration data
+    df_calibr_pressures = df_calibr_pressures.loc[df_calibr_pressures.index.repeat(len(df.index))]
+    df_calibr_pressures.index = df.index
+
+    # Apply calibration offsets
+    df = df - df_calibr_pressures
+
+    return df, l_ref
+
+def apply_calibration_20sec(df):
+    """
+    uses first 20 seconds to calculate pressure sensor calibration offsets
+    :param df:
+    :return:
+    """
+
+    # select only pressures
+    df_pres = df.iloc[:, :len(df.columns)-5]
+
+    # Select the first 20 seconds of data
+    first_20_seconds = df_pres[df_pres.index < df_pres.index[0] + pd.Timedelta(seconds=20)]
+
+    # Calculate the mean for each sensor over the first 20 seconds
+    mean_values = first_20_seconds.mean(axis=0)
+
+    # Use these means to calculate the offsets for calibration
+    offsets = mean_values - mean_values.mean()
+
+    # Apply the calibration to the entire DataFrame
+    df.iloc[:, :len(df.columns)-5] = df.iloc[:, :len(df.columns)-5] - offsets
+
+    return df
+
+def calc_wall_correction_coefficients(df_airfoil, df_cp, l_ref):
     """
     calculate wall correction coefficients according to
     Abbott and van Doenhoff 1945: Theory of Wing Sections
@@ -404,11 +482,11 @@ def calc_wall_correction_coefficients(df_airfoil, df_cp):
     lambda_wall_corr.index = df_cp.index
 
     # calculate sigma
-    sigma_wall_corr = np.pi ** 2 / 48 * (l_ref / 1000) ** 2 * 1 / 2 * (1 / (2 * d1) + 1 / (2 * d2)) ** 2
+    sigma_wall_corr = np.pi ** 2 / 48 * l_ref**2 * 1 / 2 * (1 / (2 * d1) + 1 / (2 * d2)) ** 2
 
     # correction for model influence on static reference pressure
     # TODO: Re-calculate this using a panel method or with potential flow theory
-    xi_wall_corr = -0.00335 * (l_ref / 1000) ** 2
+    xi_wall_corr = -0.00335 * l_ref**2
 
     return lambda_wall_corr, sigma_wall_corr, xi_wall_corr
 
@@ -668,8 +746,6 @@ if __name__ == '__main__':
     else:
         WDIR = "D:/Python_Codes/Workingdirectory_Auswertung"
 
-
-
     file_path_drive         = os.path.join(WDIR,  '20230926-1713_drive.dat')
     file_path_AOA           = os.path.join(WDIR,  '20230926-1713_AOA.dat')
     file_path_pstat_K02     = os.path.join(WDIR,  '20230926-1713_static_K02.dat')
@@ -680,13 +756,13 @@ if __name__ == '__main__':
     file_path_GPS           = os.path.join(WDIR,  '20230926-1713_GPS.dat')
     file_path_airfoil       = os.path.join(WDIR,  'Messpunkte Demonstrator.xlsx')
     pickle_path_airfoil     = os.path.join(WDIR,  'Messpunkte Demonstrator.p')
+    pickle_path_calibration = os.path.join(WDIR,  '20230926-171332_sensor_calibration_data.p')
 
     prandtl_data = {"unit name static": "static_K04", "i_sens_static": 31,
                     "unit name total": "static_K04", "i_sens_total": 32}
 
     start_time = "2023-08-04 21:58:19"
     end_time = "2023-08-04 21:58:49"
-    l_ref = 500  # [mm]
 
     if os.getlogin() == 'joeac':
         foil_coord_path = ("C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Data Brezn/"
@@ -695,8 +771,6 @@ if __name__ == '__main__':
         foil_coord_path= "D:/Python_Codes/Workingdirectory_Auswertung/B203-0.dat"
 
     os.chdir(WDIR)
-
-
 
     # read sensor data
     drive           = read_drive(file_path_drive)
@@ -711,6 +785,13 @@ if __name__ == '__main__':
 
     # synchronize sensor data
     df_sync = synchronize_data([pstat_K02, pstat_K03, pstat_K04, ptot_rake,pstat_rake, alphas, GPS, drive])
+
+    # apply calibration offset from calibration file
+    #df_sync, l_ref = apply_calibration_offset(pickle_path_calibration, df_sync)
+
+    # apply calibration offset from first 20 seconds
+    l_ref = 0.5
+    df_sync = apply_calibration_20sec(df_sync)
 
     # read airfoil data
     df_airfoil = read_airfoil_geometry(file_path_airfoil, c=l_ref, foil_source=foil_coord_path, eta_flap=0.0,
@@ -729,12 +810,15 @@ if __name__ == '__main__':
     cl = calc_cl_cm_cdp(df_sync, df_airfoil)
 
     # calculate drag coefficients
+    cd = calc_cd(df_sync, l_ref)
+
+    # calculate drag coefficients
     #cd = calc_cd(df, n_sens=32)
 
     # calculate wall correction coefficients
     #lambda_wall_corr, sigma_wall_corr, xi_wall_corr = calc_wall_correction_coefficients(df_airfoil, df_cp)
 
-    print(done)
+    print("done")
 
 
 
