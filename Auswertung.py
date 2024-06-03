@@ -21,14 +21,14 @@ from airfoilwinggeometry.AirfoilPackage import AirfoilTools as at
 
 
 
-def read_AOA_file(file_path_AOA):
+def read_AOA_file(filename, t0):
     """
     Converts raw AOA data to pandas DataFrame
-    :param file_path_AOA:       File name
+    :param filename:       File name
     :return: alphas             pandas DataFrame with AOA values
     """
     # Read the entire file into a pandas DataFrame
-    df = pd.read_csv(file_path_AOA, sep='\s+', header=None, names=['Date', 'Time', 'Position', 'Turn'])
+    df = pd.read_csv(filename, sep='\s+', header=None, names=['Date', 'Time', 'Position', 'Turn'])
     # Filter out rows that do not have exactly 4 parts (though this should not happen with the current read_csv)
     df = df.dropna()
 
@@ -41,11 +41,79 @@ def read_AOA_file(file_path_AOA):
     # Combine Date and Time into a single pandas datetime column
     df['Time'] = pd.to_datetime(df['Date'] + ' ' + df['Time'])
     # Select only the relevant columns
-    alphas = df[['Time', 'Alpha']]
+    df = df[['Time', 'Alpha']]
 
-    return alphas
+    # Convert start time to milliseconds since it is easier to handle arithmetic operations
+    start_time_ms = t0.timestamp() * 1000
 
-def calc_mean(df_raw, start_time, end_time):
+    # Calculate the time difference in milliseconds from the first row
+    time_diff_ms = df['Time'] - df['Time'].iloc[0]
+
+    # Add this difference to the start time (in milliseconds) and convert back to datetime
+    df['Time'] = pd.to_datetime(pd.Timestamp(start_time_ms, unit='ms') + time_diff_ms, unit='ms')
+
+    return df
+
+def read_GPS(filename, t0):
+    """
+    --> Reads GPS data into pandas DataFrame
+    --> Converts GPS speed from km/h to m/s
+    --> Converts 'Time' column into timestamp with start time t0
+    :param filename:       File name
+    :param t0:             start time (=first timestamp of a defined pandas DataFrame)
+    :return: df            pandas DataFrame with GPS data
+    """
+
+    # list of column numbers in file to be read
+    col_use = [1, 3, 5, 7]
+    # how to name the columns in the df
+    col_name = ['Time', 'Latitude N/S', 'Longitude E/W',  'U_GPS']
+
+    # read file
+    df = pd.read_csv(filename, header=None, usecols=col_use, names=col_name, on_bad_lines='skip',engine='python')
+
+    # convert km/h into m/s
+    df['U_GPS'] = df['U_GPS'] / 3.6
+
+    # drop lines with missing data
+    df = df.dropna().reset_index(drop=True)
+
+    # Calculate the time difference in seconds from the first row
+    time_diff = df['Time'] - df['Time'].iloc[0]
+
+    # Add this difference to the start time (in seconds) and convert back to datetime
+    df['Time'] = pd.to_datetime(t0.timestamp() + time_diff, unit='s')
+
+
+    return(df)
+
+def read_drive(filename):
+    """
+    --> Reads drive data of wake rake (position and speed) into pandas DataFrame
+    --> combines Date and Time to one pandas datetime column
+    --> drive time = master time
+    :param filename:       File name
+    :return: df            pandas DataFrame with drive data
+    """
+    # list of column numbers in file to be read
+    col_use = [0, 1, 2]
+    # how columns are named
+    col_name = ['Date', 'Time', 'Drive']
+
+    # read file
+    df = pd.read_csv(filename, sep="\s+", skiprows = 1, header=None, names=col_name, usecols=col_use,
+                     on_bad_lines='skip', engine='python')
+
+    # Combine Date and Time into a single pandas datetime column
+    df['Time'] = pd.to_datetime(df['Date'] + ' ' + df['Time'])
+
+    # drop date column (date column may generate problems when synchronizing data)
+    df = df.drop(columns='Date')
+
+
+    return df
+
+def calc_mean(df, start_time, end_time):
     """
     Calculates the mean value of every column in the specified time interval
     :param filename:            File name
@@ -54,7 +122,7 @@ def calc_mean(df_raw, start_time, end_time):
     :return:                    pandas DataFrame with absolute time and pressures
     """
     # Select rows between start_time and end_time
-    selected_values = df_raw.loc[(df_raw['Time'] >= start_time) & (df_raw['Time'] <= end_time)]
+    selected_values = df.loc[(df['Time'] >= start_time) & (df['Time'] <= end_time)]
     
     # Calculate the mean value for every column except 'Time'
     mean_values = selected_values.drop(columns=['Time']).mean()
@@ -99,7 +167,7 @@ def read_DLR_pressure_scanner_file(filename, n_sens, t0):
 
 def synchronize_data(merge_dfs_list):
     """
-    Syncronizes and interpolates sensor data, given in pandas DataFrames with a timestamp
+    synchronizes and interpolates sensor data, given in pandas DataFrames with a timestamp
     :param merge_dfs_list:      list of pandas DataFrames containing sensor data. Must contain "Time" column in
                                 datetime format
     :return: merged_df          merged dataframe with all sensor data, interpolated according time
@@ -120,12 +188,15 @@ def synchronize_data(merge_dfs_list):
 
 def read_airfoil_geometry(filename, c, foil_source, eta_flap, pickle_file=""):
     """
-    -> generates a DataFrame with the x and y positions of the measuring points from Excel
-    -> adds assignment of sensor unit + port to measuring point from Excel
-    -> adds inop information from Excel
-    -> drops measuring points with inop status and resets the index
-    -> renames last two columns for pstat and ptot assignment (always last two rows in Excel)
-    -> generates a new row with sensor names as labeled in column index of df_sync
+    --> searchs for pickle file in WD, if not found it creates a new pickle file
+    --> generates pandas DataFrame with assignment of sensor unit + port to measuring point from Excel and renames
+    --> adds 's' positions of the measuring points from Excel (line coordinate around the profile,
+        starting at trailing edge)
+    --> reads 'Kommentar' column of excel and drops sensors with status 'inop'
+    --> calculates x and y position of static pressure points with airfoil coordinate file
+    --> calculates x_n and y_n normal vector, tangential to airfoil surface of static pressure points
+        with airfoil coordinate file
+
     :param filename:            file name of Excel eg. "Messpunkte Demonstrator.xlsx".
     :param c:                   airfoil chord length
     :param foil_source:         string, path of airfoil coordinate file
@@ -176,9 +247,48 @@ def read_airfoil_geometry(filename, c, foil_source, eta_flap, pickle_file=""):
 
     return df
 
+def calc_U_CAS(df, prandtl_data):
+    """
+    --> picks static port of pstat and ptot of free stream, measured by prandtl probe from df
+    --> assumes density of air according to International Standard Atmosphere (ISA)
+    --> calculates calibrated airspeed with definition of total pressure
+
+    :param df:                  pandas DataFrame with synchronized and interpolated measurement data
+    :param prandtl_data:        dict with "unit name static", "i_sens_static", "unit name total" and
+                                "i_sens_total".
+                                This specifies the sensor units and the index of the sensors of the Prandtl
+                                probe total
+                                pressure sensor and the static pressure sensor
+    :return:                    df with added 'U_CAS' column
+    """
+
+    colname_total = prandtl_data['unit name total'] + '_' + str(prandtl_data['i_sens_total'])
+    colname_static = prandtl_data['unit name static'] + '_' + str(prandtl_data['i_sens_static'])
+    ptot = df[colname_total]
+    pstat = df[colname_static]
+
+    # density of air according to International Standard Atmosphere (ISA)
+    rho_ISA = 1.225
+
+    df['U_CAS'] = np.sqrt(2 * (ptot - pstat) / rho_ISA)
+    return df
+
+def calc_wind(df):
+    """
+    --> calculates wind component in free stream direction
+
+    :param df:          pandas DataFrame containing 'U_CAS' and 'U_GPS' column
+    :return: df         pandas DataFrame with wind component column
+    """
+
+    df['Wind'] = df['U_CAS'] - df['U_GPS']
+
+    return df
+
 def calc_cp(df, prandtl_data, pressure_data_ident_strings):
     """
-    calculates for each static port on airfoil pressure coefficient
+    calculates pressure coefficient for each static port on airfoil
+
     :param df:                          pandas DataFrame with synchronized and interpolated measurement data
     :param prandtl_data:                dict with "unit name static", "i_sens_static", "unit name total" and
                                         "i_sens_total".
@@ -191,9 +301,10 @@ def calc_cp(df, prandtl_data, pressure_data_ident_strings):
                                         every
                                         measuring point
     """
-
+    # picks names of prandtl sensors
     colname_total = prandtl_data['unit name total'] + '_' + str(prandtl_data['i_sens_total'])
     colname_static = prandtl_data['unit name static'] + '_' + str(prandtl_data['i_sens_static'])
+    # picks columns with prandtl data
     ptot = df[colname_total]
     pstat = df[colname_static]
 
@@ -202,6 +313,7 @@ def calc_cp(df, prandtl_data, pressure_data_ident_strings):
     for string in pressure_data_ident_strings:
         pressure_cols += [col for col in df.columns if string in col]
 
+    # apply definition of c_p
     df[pressure_cols] = df[pressure_cols].apply(lambda p_col: (p_col - pstat)/(ptot - pstat))
 
     df.replace([np.inf, -np.inf], 0., inplace=True)
@@ -210,12 +322,11 @@ def calc_cp(df, prandtl_data, pressure_data_ident_strings):
 
 def calc_cl_cm_cdp(df, df_airfoil):
     """
-    Calculates normal and tangential (based on airfoil chord) force coefficient. All information at certain 
-    measuring points are integrated to one value. Equations from Döller page 40
+    calculates lift coefficient
     :param df:                  list of pandas DataFrames containing cp values
     :param df_airfoil:          list of pandas DataFrames containing columns of x_n and y_n normal vectors of measuring points
                                 on airfoil
-    :return:df_cl_cm_cdp        merged dataframe with cn and ct coefficient at certain times
+    :return:df                  merged dataframe with added cl coefficient column
     """
 
     # calculate tap normal vector components on airfoil surface projected to aerodynamic coordinate system
@@ -232,28 +343,83 @@ def calc_cl_cm_cdp(df, df_airfoil):
 
     df["cl"] = -integrate.simpson(df[sens_ident_cols] * n_proj_z, x=df_airfoil['s'])
 
-
     """fig, ax = plt.subplots()
     ax.plot(df_airfoil["x"], df_airfoil["y"], "k-")
     ax.plot(df_airfoil["x"], -df[sens_ident_cols].iloc[15000], "b.-")
     plt.axis("equal")"""
-    # Ensure the column indexes match (drops pstat and ptot column)
-    df = df.iloc[:, :-2]
-    columns = df.columns.intersection(df_airfoil.columns)
-    
-    # Extract relevant data from both dataframes
-    cp = df[columns]
-    x = df_airfoil.loc["x [mm]", columns]
-    y = df_airfoil.loc["y [mm]", columns]
-    # calculate cn
-    cn_values = (((cp.shift(-1, axis=1) + cp) / 2) *  ((x.diff().shift(-1)) / t)).sum(axis=1)
-    # calculate ct
-    ct_values = (((cp.shift(-1, axis=1) + cp) / 2) *  ((y.diff().shift(-1)) / t)).sum(axis=1)
-    
-    # Create a result dataframe with cn values
-    df_cn_ct = pd.DataFrame({'cn': cn_values, 'ct': ct_values})
-    
-    return df_cl_cm_cdp
+
+    return df
+
+def calc_cd(df, n_sens):
+
+
+    df_sensor_stat = df.filter(regex='^pstat_rake_')
+    int_columns = pd.DataFrame(np.nan, index=df_sensor_stat.index, columns=[f'{i}' for i in range(1, 28)])
+    df_sensor_stat = (pd.concat([df_sensor_stat, int_columns], axis=1))
+    z_stat = np.linspace(-h_stat / 2, h_stat / 2, n_sens, endpoint=True)
+    cp_stat_int = interpolate.interp1d(z_stat, df_sensor_stat, kind="linear"
+                                       , axis=1)
+
+    return df
+
+
+def calc_wall_correction_coefficients(df_airfoil, df_cp):
+    """
+    calculate wall correction coefficients according to
+    Abbott and van Doenhoff 1945: Theory of Wing Sections
+    and
+    Althaus 2003: Tunnel-Wall Corrections at the Laminar Wind Tunnel
+    :param df_airfoil:      pandas dataframe with x and y position of airfoil contour
+    :param df_cp:           pandas dataframe with cp values
+    :return:                wall correction coefficients
+    """
+
+    # model - wall distances:
+    d1 = 0.7
+    d2 = 1.582
+
+    # drop ptot and pstat columns and transpose df_airfoil
+    df_airfoil = df_airfoil.drop(columns=['pstat', 'ptot'])
+    df_airfoil = df_airfoil.T
+    df_airfoil = df_airfoil.drop(columns=['name', 'inop sensors', 'port', 'sensor unit'])
+    df_airfoil = df_airfoil / 1000
+
+    # calculate surface contour gradient dy_t/dx as finite difference scheme. first and last value are calculated
+    # with forward and backward difference scheme, respectively and all other values with central difference
+    # scheme
+    dyt_dx = np.zeros(len(df_airfoil.index))
+    dyt_dx[0] = (df_airfoil["y [mm]"].iloc[1] - df_airfoil["y [mm]"].iloc[0]) / \
+                (df_airfoil["x [mm]"].iloc[1] - df_airfoil["x [mm]"].iloc[0])
+    dyt_dx[-1] = (df_airfoil["y [mm]"].iloc[-1] - df_airfoil["y [mm]"].iloc[-2]) / \
+                 (df_airfoil["x [mm]"].iloc[-1] - df_airfoil["x [mm]"].iloc[-2])
+    dyt_dx[1:-1] = (df_airfoil["y [mm]"].iloc[2:].values - df_airfoil["y [mm]"].iloc[:-2].values) / \
+                   (df_airfoil["x [mm]"].iloc[2:].values - df_airfoil["x [mm]"].iloc[:-2].values)
+    # calculate v/V_inf
+    v_V_inf = np.sqrt(abs(1 - df_cp.values))
+
+    # calculate lambda (warning: Lambda of Althaus is erroneus, first y factor forgotten)
+    lambda_wall_corr = integrate.simpson(
+        y=16 / np.pi * df_airfoil["y [mm]"].values * v_V_inf * np.sqrt(1 + dyt_dx ** 2), x=df_airfoil["x [mm]"].values)
+    lambda_wall_corr = pd.DataFrame(lambda_wall_corr, columns=['lambda'])
+    lambda_wall_corr.index = df_cp.index
+
+    # calculate sigma
+    sigma_wall_corr = np.pi ** 2 / 48 * (l_ref / 1000) ** 2 * 1 / 2 * (1 / (2 * d1) + 1 / (2 * d2)) ** 2
+
+    # correction for model influence on static reference pressure
+    # TODO: Re-calculate this using a panel method or with potential flow theory
+    xi_wall_corr = -0.00335 * (l_ref / 1000) ** 2
+
+    return lambda_wall_corr, sigma_wall_corr, xi_wall_corr
+
+
+
+
+
+
+
+
+
 
 def calc_cl_cd(df_cn_ct, df_sync):
     """
@@ -265,7 +431,7 @@ def calc_cl_cd(df_cn_ct, df_sync):
     :return: df_cl_cd:      merged dataframe with lift and drag coefficient at certain times
     """
 
-    alpha = df_sync.loc[:, "Alpha"] # extracting the syncronized alpha column from df_sync
+    alpha = df_sync.loc[:, "Alpha"] # extracting the synchronized alpha column from df_sync
     cn = df_cn_ct.loc[:,"cn"]  # extracting the cn column from df_cn_ct
     ct = df_cn_ct.loc[:,"ct"]  # extracting the ct column from df_cn_ct
     # calculating lift coefficient
@@ -485,74 +651,8 @@ def plot_cl_alpha(df_cl_cd, df_sync, start_time, end_time):
     
     return 1
 
-def calc_wall_correction_coefficients(df_airfoil, df_cp):
-    """
-    calculate wall correction coefficients according to
-    Abbott and van Doenhoff 1945: Theory of Wing Sections
-    and
-    Althaus 2003: Tunnel-Wall Corrections at the Laminar Wind Tunnel
-    :param df_x_yt_cpt: pandas DataFrame with x, yt, and cp values of decambered airfoil
-    :return:
-    """
-
-    # model - wall distances:
-    d1 = 0.7
-    d2 = 1.582
-    
-    # drop ptot and pstat columns and transpose df_airfoil 
-    df_airfoil = df_airfoil.drop(columns=['pstat', 'ptot'])
-    df_airfoil = df_airfoil.T
-    df_airfoil = df_airfoil.drop(columns=['name', 'inop sensors', 'port', 'sensor unit'])
-    df_airfoil = df_airfoil / 1000
-
-    # calculate surface contour gradient dy_t/dx as finite difference scheme. first and last value are calculated
-    # with forward and backward difference scheme, respectively and all other values with central difference
-    # scheme
-    dyt_dx = np.zeros(len(df_airfoil.index))
-    dyt_dx[0] = (df_airfoil["y [mm]"].iloc[1] - df_airfoil["y [mm]"].iloc[0]) / \
-                (df_airfoil["x [mm]"].iloc[1] - df_airfoil["x [mm]"].iloc[0])
-    dyt_dx[-1] = (df_airfoil["y [mm]"].iloc[-1] - df_airfoil["y [mm]"].iloc[-2]) / \
-                    (df_airfoil["x [mm]"].iloc[-1] - df_airfoil["x [mm]"].iloc[-2])
-    dyt_dx[1:-1] = (df_airfoil["y [mm]"].iloc[2:].values - df_airfoil["y [mm]"].iloc[:-2].values) / \
-                      (df_airfoil["x [mm]"].iloc[2:].values - df_airfoil["x [mm]"].iloc[:-2].values)
-    # calculate v/V_inf
-    v_V_inf = np.sqrt(abs(1 - df_cp.values))
-
-    # calculate lambda (warning: Lambda of Althaus is erroneus, first y factor forgotten)
-    lambda_wall_corr = integrate.simpson(y=16/np.pi*df_airfoil["y [mm]"].values*v_V_inf *np.sqrt(1 + dyt_dx**2), x=df_airfoil["x [mm]"].values)
-    lambda_wall_corr = pd.DataFrame(lambda_wall_corr, columns=['lambda'])
-    lambda_wall_corr.index = df_cp.index
-
-    # calculate sigma
-    sigma_wall_corr = np.pi**2 / 48 * (l_ref/1000)**2 * 1/2 * (1/(2*d1) + 1/(2*d2))**2
-
-    # correction for model influence on static reference pressure
-    # TODO: Re-calculate this using a panel method or with potential flow theory
-    xi_wall_corr = -0.00335 * (l_ref/1000)**2
-    
-    return lambda_wall_corr, sigma_wall_corr, xi_wall_corr
-
-def calc_U_CAS(df, prandtl_data):
-    """
-
-    :param df:
-    :param prandtl_data:
-    :return:
-    """
-
-    colname_total = prandtl_data['unit name total'] + '_' + str(prandtl_data['i_sens_total'])
-    colname_static = prandtl_data['unit name static'] + '_' + str(prandtl_data['i_sens_static'])
-    ptot = df[colname_total]
-    pstat = df[colname_static]
-
-    # density of air according to International Standard Atmosphere (ISA)
-    rho_ISA = 1.225
-
-    df['U_CAS'] = np.sqrt(2 * (ptot-pstat) / rho_ISA)
-    return df
 
 
- 
 
 
     
@@ -566,19 +666,20 @@ if __name__ == '__main__':
     if os.getlogin() == 'joeac':
         WDIR = "C:/WDIR/MoProMa_Auswertung/"
     else:
-        WDIR = ""
+        WDIR = "D:/Python_Codes/Workingdirectory_Auswertung"
 
 
 
-    file_path_drive = os.path.join(WDIR, '20230926-1713_drive.dat')
-    file_path_AOA = os.path.join(WDIR,  '20230926-1713_AOA.dat')
-    file_path_pstat_K02 = os.path.join(WDIR,  '20230926-1713_static_K02.dat')
-    file_path_pstat_K03 = os.path.join(WDIR,  '20230926-1713_static_K03.dat')
-    file_path_pstat_K04 = os.path.join(WDIR,  '20230926-1713_static_K04.dat')
-    file_path_ptot_rake = os.path.join(WDIR,  '20230926-1713_ptot_rake.dat')
-    file_path_pstat_rake = os.path.join(WDIR,  '20230926-1713_pstat_rake.dat')
-    file_path_airfoil = os.path.join(WDIR,  'Messpunkte Demonstrator.xlsx')
-    pickle_path_airfoil = os.path.join(WDIR,  'Messpunkte Demonstrator.p')
+    file_path_drive         = os.path.join(WDIR,  '20230926-1713_drive.dat')
+    file_path_AOA           = os.path.join(WDIR,  '20230926-1713_AOA.dat')
+    file_path_pstat_K02     = os.path.join(WDIR,  '20230926-1713_static_K02.dat')
+    file_path_pstat_K03     = os.path.join(WDIR,  '20230926-1713_static_K03.dat')
+    file_path_pstat_K04     = os.path.join(WDIR,  '20230926-1713_static_K04.dat')
+    file_path_ptot_rake     = os.path.join(WDIR,  '20230926-1713_ptot_rake.dat')
+    file_path_pstat_rake    = os.path.join(WDIR,  '20230926-1713_pstat_rake.dat')
+    file_path_GPS           = os.path.join(WDIR,  '20230926-1713_GPS.dat')
+    file_path_airfoil       = os.path.join(WDIR,  'Messpunkte Demonstrator.xlsx')
+    pickle_path_airfoil     = os.path.join(WDIR,  'Messpunkte Demonstrator.p')
 
     prandtl_data = {"unit name static": "static_K04", "i_sens_static": 31,
                     "unit name total": "static_K04", "i_sens_total": 32}
@@ -586,40 +687,68 @@ if __name__ == '__main__':
     start_time = "2023-08-04 21:58:19"
     end_time = "2023-08-04 21:58:49"
     l_ref = 500  # [mm]
-    foil_coord_path = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Data Brezn/01_Aerodynamic Design/01_Airfoil Optimization/B203/0969/B203-0.dat"
+
+    if os.getlogin() == 'joeac':
+        foil_coord_path = ("C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Data Brezn/"
+                           "01_Aerodynamic Design/01_Airfoil Optimization/B203/0969/B203-0.dat")
+    else:
+        foil_coord_path= "D:/Python_Codes/Workingdirectory_Auswertung/B203-0.dat"
 
     os.chdir(WDIR)
 
-    # Read all sensor data
-    alphas = read_AOA_file(file_path_AOA)
-    alpha_mean = calc_mean(alphas, start_time, end_time)
-    pstat_K02 = read_DLR_pressure_scanner_file(file_path_pstat_K02, n_sens=32, t0=alphas["Time"].iloc[0])
-    pstat_K03 = read_DLR_pressure_scanner_file(file_path_pstat_K03, n_sens=32, t0=alphas["Time"].iloc[0])
-    pstat_K04 = read_DLR_pressure_scanner_file(file_path_pstat_K04, n_sens=32, t0=alphas["Time"].iloc[0])
-    ptot_rake = read_DLR_pressure_scanner_file(file_path_ptot_rake, n_sens=32, t0=alphas["Time"].iloc[0])
-    pstat_rake = read_DLR_pressure_scanner_file(file_path_pstat_rake, n_sens=5, t0=alphas["Time"].iloc[0])
-    df_sync = synchronize_data([pstat_K02, pstat_K03, pstat_K04, ptot_rake,pstat_rake, alphas])
+
+
+    # read sensor data
+    drive           = read_drive(file_path_drive)
+    alphas          = read_AOA_file(file_path_AOA,t0=drive["Time"].iloc[0])
+    alpha_mean      = calc_mean(alphas, start_time, end_time)
+    GPS             = read_GPS(file_path_GPS, t0=drive["Time"].iloc[0])
+    pstat_K02       = read_DLR_pressure_scanner_file(file_path_pstat_K02, n_sens=32, t0=drive["Time"].iloc[0])
+    pstat_K03       = read_DLR_pressure_scanner_file(file_path_pstat_K03, n_sens=32, t0=drive["Time"].iloc[0])
+    pstat_K04       = read_DLR_pressure_scanner_file(file_path_pstat_K04, n_sens=32, t0=drive["Time"].iloc[0])
+    ptot_rake       = read_DLR_pressure_scanner_file(file_path_ptot_rake, n_sens=32, t0=drive["Time"].iloc[0])
+    pstat_rake      = read_DLR_pressure_scanner_file(file_path_pstat_rake, n_sens=5, t0=drive["Time"].iloc[0])
+
+    # synchronize sensor data
+    df_sync = synchronize_data([pstat_K02, pstat_K03, pstat_K04, ptot_rake,pstat_rake, alphas, GPS, drive])
+
+    # read airfoil data
     df_airfoil = read_airfoil_geometry(file_path_airfoil, c=l_ref, foil_source=foil_coord_path, eta_flap=0.0,
                                        pickle_file=pickle_path_airfoil)
 
-    # calculate airspeed
+    # calculate airspeed from pitot static system
     df_sync = calc_U_CAS(df_sync, prandtl_data)
+
+    # calculate wind component
+    df_sync = calc_wind(df_sync)
 
     # calculate pressure coefficients
     df_sync = calc_cp(df_sync, prandtl_data, pressure_data_ident_strings=['stat', 'ptot'])
 
     # calculate lift coefficients
     cl = calc_cl_cm_cdp(df_sync, df_airfoil)
-    lambda_wall_corr, sigma_wall_corr, xi_wall_corr = calc_wall_correction_coefficients(df_airfoil, df_cp)
-    df_cl_cd = calc_cl_cd(df_cn_ct, df_sync)
-    df_sync_rake_sort = sort_rake_data(df_sync, num_columns=32)
-    df_cd_rake = calc_rake_cd(df_sync_rake_sort, lambda_wall_corr, sigma_wall_corr, xi_wall_corr)
-    plot(df_cl_cd, start_time, end_time, 'time', 'cl')
-    plot(df_cl_cd, start_time, end_time, 'time', 'cd_stat')
-    plot(df_cd_rake, start_time, end_time, 'time', 'cd_rake')
-    plot(df_cl_cd, start_time, end_time, 'cd_stat', 'cl')
-    plot_cl_cd_rake(df_cl_cd, df_cd_rake, start_time, end_time)
-    plot_cl_alpha(df_cl_cd, df_sync, start_time, end_time)
+
+    # calculate drag coefficients
+    #cd = calc_cd(df, n_sens=32)
+
+    # calculate wall correction coefficients
+    #lambda_wall_corr, sigma_wall_corr, xi_wall_corr = calc_wall_correction_coefficients(df_airfoil, df_cp)
+
+    print(done)
+
+
+
+
+
+    #df_cl_cd = calc_cl_cd(df_cn_ct, df_sync)
+    #df_sync_rake_sort = sort_rake_data(df_sync, num_columns=32)
+    #df_cd_rake = calc_rake_cd(df_sync_rake_sort, lambda_wall_corr, sigma_wall_corr, xi_wall_corr)
+    #plot(df_cl_cd, start_time, end_time, 'time', 'cl')
+    #plot(df_cl_cd, start_time, end_time, 'time', 'cd_stat')
+    #plot(df_cd_rake, start_time, end_time, 'time', 'cd_rake')
+    #plot(df_cl_cd, start_time, end_time, 'cd_stat', 'cl')
+    #plot_cl_cd_rake(df_cl_cd, df_cd_rake, start_time, end_time)
+    #plot_cl_alpha(df_cl_cd, df_sync, start_time, end_time)
     
     
 
