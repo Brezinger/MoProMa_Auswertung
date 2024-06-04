@@ -493,7 +493,9 @@ def calc_cd(df, l_ref, lambda_wall, sigma_wall, xi_wall):
     # apply wind tunnel wall corrections
     cd = cd * (1 - 2 * lambda_wall * (sigma_wall + xi_wall))
 
-    return cd
+    df["cd"] = cd
+
+    return df
 
 def apply_calibration_offset(filename, df):
 
@@ -682,9 +684,6 @@ if __name__ == '__main__':
 
     # calculate drag coefficients
     df_sync = calc_cd(df_sync, l_ref, lambda_wall, sigma_wall, xi_wall)
-
-
-
 
 
     print("done")
