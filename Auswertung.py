@@ -233,13 +233,15 @@ def read_airfoil_geometry(filename, c, foil_source, eta_flap, pickle_file=""):
     :return df_airfoil:         DataFrame with info described above
     """
 
+    # initialize airfoilTools object
+    foil = at.Airfoil(foil_source)
+
     if os.path.exists(pickle_file):
         with open(pickle_file, 'rb') as file:
             df, eta_flap_read = pickle.load(file)
 
     if not os.path.exists(pickle_file) or eta_flap_read != eta_flap:
-        # initialize airfoilTools object
-        foil = at.Airfoil(foil_source)
+
         if eta_flap != 0.0:
             foil.flap(xFlap=0.8, yFlap=0, etaFlap=15)
 
@@ -249,13 +251,19 @@ def read_airfoil_geometry(filename, c, foil_source, eta_flap, pickle_file=""):
         df = df.drop(df[df["Kommentar"] == "inop"].index).reset_index(drop=True)
         df = df.astype({'Messpunkt': 'int32', 'Sensor unit K': 'int32', 'Sensor port': 'int32'})
 
+        # append virtual trailing edge pressure taps (pressure is mean between last sensor at to and bottom side)
+        df_virt_top = pd.DataFrame([[np.nan, "virtual_top", 0, -1, -1, np.nan]], columns=df.columns)
+        # virtual bottom trailing edge tap: s value must be calculated
+        df_virt_bot = pd.DataFrame([[np.nan, "virtual_bot", at.s_curve(foil.u[-1], foil.tck)*c*1000, -1, -1, np.nan]],
+                                   columns=df.columns)
+        df = pd.concat([df_virt_top, df, df_virt_bot]).reset_index(drop=True)
+
         df["s"] = df["Position [mm]"]/(c*1000)
         df["x"] = np.nan
         df["y"] = np.nan
 
         df["x_n"] = np.nan
         df["y_n"] = np.nan
-
 
         u_taps = np.zeros(len(df.index))
 
@@ -273,22 +281,16 @@ def read_airfoil_geometry(filename, c, foil_source, eta_flap, pickle_file=""):
             with open(pickle_file, 'wb') as file:
                 pickle.dump([df, eta_flap], file)
 
-    return df
+    return df, foil
 
-def calc_U_CAS(df, prandtl_data):
+def calc_airspeed_wind(df, prandtl_data, T, l_ref):
     """
-    --> picks static port of pstat and ptot of free stream, measured by prandtl probe from df
-    --> assumes density of air according to International Standard Atmosphere (ISA)
-    --> calculates calibrated airspeed with definition of total pressure
+    --> calculates wind component in free stream direction
 
-    :param df:                  pandas DataFrame with synchronized and interpolated measurement data
-    :param prandtl_data:        dict with "unit name static", "i_sens_static", "unit name total" and
-                                "i_sens_total".
-                                This specifies the sensor units and the index of the sensors of the Prandtl
-                                probe total
-                                pressure sensor and the static pressure sensor
-    :return:                    df with added 'U_CAS' column
+    :param df:          pandas DataFrame containing 'U_CAS' and 'U_GPS' column
+    :return: df         pandas DataFrame with wind component column
     """
+
 
     colname_total = prandtl_data['unit name total'] + '_' + str(prandtl_data['i_sens_total'])
     colname_static = prandtl_data['unit name static'] + '_' + str(prandtl_data['i_sens_static'])
@@ -297,19 +299,20 @@ def calc_U_CAS(df, prandtl_data):
 
     # density of air according to International Standard Atmosphere (ISA)
     rho_ISA = 1.225
+    R_s = 287.0500676
+    # calculate derived variables (dynamic viscosity). Has to be calculated online if we chose to add a temp sensor
+    # Formula from https://calculator.academy/viscosity-of-air-calculator/
+    mu = (1.458E-6 * T ** (3 / 2)) / (T + 110.4)
 
     df['U_CAS'] = np.sqrt(2 * (ptot - pstat) / rho_ISA)
-    return df
 
-def calc_wind(df):
-    """
-    --> calculates wind component in free stream direction
+    # calculate air speeds
+    rho = pstat / (R_s * T)
+    df['U_TAS'] = np.sqrt(np.abs(2 * (ptot - pstat) / rho))
+    df['Re'] = df['U_TAS'] * l_ref * rho / mu
 
-    :param df:          pandas DataFrame containing 'U_CAS' and 'U_GPS' column
-    :return: df         pandas DataFrame with wind component column
-    """
-
-    df['Wind'] = df['U_CAS'] - df['U_GPS']
+    # calculating wind component in free stream direction
+    df['wind_component'] = df['U_TAS'] - df['U_GPS']
 
     return df
 
@@ -348,7 +351,7 @@ def calc_cp(df, prandtl_data, pressure_data_ident_strings):
 
     return df
 
-def calc_cl_cm_cdp(df, df_airfoil, flap_pivots=[]):
+def calc_cl_cm_cdp(df, df_airfoil, at_airfoil, flap_pivots=[], lambda_wall=0., sigma_wall=0., xi_wall=0.):
     """
     calculates lift coefficient
     :param df:                  list of pandas DataFrames containing cp values
@@ -364,22 +367,30 @@ def calc_cl_cm_cdp(df, df_airfoil, flap_pivots=[]):
                                              np.sin(np.deg2rad(df['Alpha']))])).T
 
     # assign tap index to sensor unit and sensor port
-    sens_ident_cols = ["static_K0{0:d}_{1:d}".format(df_airfoil.loc[i, "Sensor unit K"], df_airfoil.loc[i,
-                        "Sensor port"]) for i in df_airfoil.index]
+    sens_ident_cols = ["static_K0{0:d}_{1:d}".format(df_airfoil.loc[i, "Sensor unit K"],
+                                                     df_airfoil.loc[i, "Sensor port"]) for i in df_airfoil.index[1:-1]]
+    # calculate virtual pressure coefficient
+    df["static_virtual_top"] = df["static_virtual_bot"] = (df[sens_ident_cols[0]] + df[sens_ident_cols[-1]])/2
+    # re-arrange columns
+    cols = df.columns.to_list()
+    cols = cols[:3*32] + cols[-2:] + cols[3*32:-2]
+    df = df[cols].copy()
+    sens_ident_cols = ["static_virtual_top"] + sens_ident_cols + ["static_virtual_bot"]
+
 
     # calculate cl
     cp = df[sens_ident_cols].to_numpy()
-    df["cl"] = -integrate.simpson(cp * n_proj_z, x=df_airfoil['s'])
+    df.loc[:, "cl"] = -integrate.simpson(cp * n_proj_z, x=df_airfoil['s'])
 
     # calculate pressure drag
-    df["cdp"] = -integrate.simpson(cp * n_proj_x, x=df_airfoil['s'])
+    df.loc[:, "cdp"] = -integrate.simpson(cp * n_proj_x, x=df_airfoil['s'])
 
     n_taps = df_airfoil[['x_n', 'y_n']].to_numpy()
     s_taps = df_airfoil['s']
 
     # calculate hinge moment
     r_ref = np.tile(np.array([0.25, 0]), [len(df_airfoil.index), 1]) - df_airfoil[['x', 'y']].to_numpy()
-    df["cm"] = -integrate.simpson(cp * np.tile(np.cross(n_taps, r_ref), [len(df.index), 1]),
+    df.loc[:, "cm"] = -integrate.simpson(cp * np.tile(np.cross(n_taps, r_ref), [len(df.index), 1]),
                                   x=s_taps)
 
     # calculate hinge moment of trailing edge flap
@@ -397,19 +408,36 @@ def calc_cl_cm_cdp(df, df_airfoil, flap_pivots=[]):
     if TE_flap:
         r_ref_F = df_airfoil[['x', 'y']].to_numpy() - np.tile(flap_pivot_TE, [len(df_airfoil.index), 1])
         mask = df_airfoil['x'].to_numpy() >= flap_pivot_TE[0]
-        df["cmr_TE"] = integrate.simpson(cp[:, mask] * np.tile(np.cross(n_taps[mask], r_ref_F[mask, :]),
+        df.loc[:, "cmr_TE"] = integrate.simpson(cp[:, mask] * np.tile(np.cross(n_taps[mask], r_ref_F[mask, :]),
                                               [len(df.index), 1]), x=s_taps[mask])
     if LE_flap:
         r_ref_F = df_airfoil[['x', 'y']].to_numpy() - np.tile(flap_pivot_LE, [len(df_airfoil.index), 1])
         mask = df_airfoil['x'].to_numpy() <= flap_pivot_LE[0]
-        df["cmr_LE"] = integrate.simpson(cp[:, mask] * np.tile(np.cross(n_taps[mask], r_ref_F[mask, :]),
+        df.loc[:, "cmr_LE"] = integrate.simpson(cp[:, mask] * np.tile(np.cross(n_taps[mask], r_ref_F[mask, :]),
                                               [len(df.index), 1]), x=s_taps[mask])
+        # apply wind tunnel wall corrections
+        df.loc[:, "cl"] = df["cl"] * (1 - 2 * lambda_wall * (sigma_wall + xi_wall) - sigma_wall)
 
-    """fig, ax = plt.subplots()
-    ax.plot(df_airfoil["x"], df_airfoil["y"], "k-")
-    ax.plot(df_airfoil["x"], -df[sens_ident_cols].iloc[15000], "b.-")
-    plt.axis("equal")
+        df.loc[:, "cm"] = df["cm"] * (1 - 2 * lambda_wall * (sigma_wall + xi_wall))
 
+    # finally apply wall correction to cp's (after calculation of lift and moment coefficients.
+    # Otherwise, correction would be applied twice
+    df.loc[:, sens_ident_cols] = (1 - 2 * lambda_wall * (sigma_wall + xi_wall) - sigma_wall) * df[sens_ident_cols]
+
+    fig, ax = plt.subplots()
+    ax_cp = ax.twinx()
+    ax.plot(at_airfoil.coords[:, 0], at_airfoil.coords[:, 1], "k-")
+    ax.plot(df_airfoil["x"], df_airfoil["y"], "k.")
+    ax_cp.plot(df_airfoil["x"], df[sens_ident_cols].iloc[15000], "b.-")
+    ylim_u, ylim_l = ax_cp.get_ylim()
+    ax_cp.set_ylim([ylim_l, ylim_u])
+    ax.set_xlabel("$x$")
+    ax.set_ylabel("$y$")
+    ax_cp.set_ylabel("$c_p$")
+    ax_cp.grid()
+    ax.axis("equal")
+
+    """
     fig2, ax2 = plt.subplots()
     ax3 = ax2.twinx()
     ax3.plot(df.loc[df["U_CAS"] > 25].index, df.loc[df["U_CAS"] > 25, "Alpha"], "y-", label=r"$\alpha$")
@@ -432,7 +460,7 @@ def calc_cl_cm_cdp(df, df_airfoil, flap_pivots=[]):
 
     return df
 
-def calc_cd(df, l_ref):
+def calc_cd(df, l_ref, lambda_wall, sigma_wall, xi_wall):
     """
 
     :param df:
@@ -461,6 +489,9 @@ def calc_cd(df, l_ref):
 
     # integrate integrand with simpson rule
     cd = integrate.simpson(d_cd_jones, z_tot) * 1 / (l_ref*1000)
+
+    # apply wind tunnel wall corrections
+    cd = cd * (1 - 2 * lambda_wall * (sigma_wall + xi_wall))
 
     return cd
 
@@ -510,7 +541,7 @@ def apply_calibration_20sec(df):
 
     return df
 
-def calc_wall_correction_coefficients(df_airfoil, df_cp, l_ref):
+def calc_wall_correction_coefficients(df_airfoil, filepath, l_ref):
     """
     calculate wall correction coefficients according to
     Abbott and van Doenhoff 1945: Theory of Wing Sections
@@ -521,34 +552,30 @@ def calc_wall_correction_coefficients(df_airfoil, df_cp, l_ref):
     :return:                wall correction coefficients
     """
 
+    #read symmetrical airfoil data
+    column_names = ['x', 'y', 'cp']
+    df_wall_correction_cp = pd.read_csv(filepath, names=column_names, skiprows=3, delim_whitespace=True)
+
     # model - wall distances:
     d1 = 0.7
     d2 = 1.582
 
-    # drop ptot and pstat columns and transpose df_airfoil
-    df_airfoil = df_airfoil.drop(columns=['pstat', 'ptot'])
-    df_airfoil = df_airfoil.T
-    df_airfoil = df_airfoil.drop(columns=['name', 'inop sensors', 'port', 'sensor unit'])
-    df_airfoil = df_airfoil / 1000
+    # cut off bottom airfoil side
+    df_wall_correction_cp = df_wall_correction_cp.iloc[:np.argmin(df_wall_correction_cp["x"]) + 1, :]
+    # and flip it
+    df_wall_correction_cp = df_wall_correction_cp.iloc[::-1, :].reset_index(drop=True)
 
     # calculate surface contour gradient dy_t/dx as finite difference scheme. first and last value are calculated
     # with forward and backward difference scheme, respectively and all other values with central difference
     # scheme
-    dyt_dx = np.zeros(len(df_airfoil.index))
-    dyt_dx[0] = (df_airfoil["y [mm]"].iloc[1] - df_airfoil["y [mm]"].iloc[0]) / \
-                (df_airfoil["x [mm]"].iloc[1] - df_airfoil["x [mm]"].iloc[0])
-    dyt_dx[-1] = (df_airfoil["y [mm]"].iloc[-1] - df_airfoil["y [mm]"].iloc[-2]) / \
-                 (df_airfoil["x [mm]"].iloc[-1] - df_airfoil["x [mm]"].iloc[-2])
-    dyt_dx[1:-1] = (df_airfoil["y [mm]"].iloc[2:].values - df_airfoil["y [mm]"].iloc[:-2].values) / \
-                   (df_airfoil["x [mm]"].iloc[2:].values - df_airfoil["x [mm]"].iloc[:-2].values)
+    dyt_dx = np.gradient(df_wall_correction_cp["y"])/np.gradient(df_wall_correction_cp["x"])
+
     # calculate v/V_inf
-    v_V_inf = np.sqrt(abs(1 - df_cp.values))
+    v_V_inf = np.sqrt(1 - df_wall_correction_cp["cp"].values)
 
     # calculate lambda (warning: Lambda of Althaus is erroneus, first y factor forgotten)
-    lambda_wall_corr = integrate.simpson(
-        y=16 / np.pi * df_airfoil["y [mm]"].values * v_V_inf * np.sqrt(1 + dyt_dx ** 2), x=df_airfoil["x [mm]"].values)
-    lambda_wall_corr = pd.DataFrame(lambda_wall_corr, columns=['lambda'])
-    lambda_wall_corr.index = df_cp.index
+    lambda_wall_corr = integrate.simpson(y=16 / np.pi * df_wall_correction_cp["y"].values * v_V_inf *
+                                                np.sqrt(1 + dyt_dx ** 2), x=df_wall_correction_cp["x"].values)
 
     # calculate sigma
     sigma_wall_corr = np.pi ** 2 / 48 * l_ref**2 * 1 / 2 * (1 / (2 * d1) + 1 / (2 * d2)) ** 2
@@ -567,236 +594,6 @@ def calc_wall_correction_coefficients(df_airfoil, df_cp, l_ref):
 
 
 
-
-def calc_cl_cd(df_cn_ct, df_sync):
-    """
-    Calculates lift and drag coefficient. Drag coefficient derived from static pressure ports on airfoil!
-    Equations from Döller page 41, applying wind tunnel correction according Althasus eq. 36
-    :param df_cn_ct:        list of pandas DataFrames containing "cn" and "ct" column
-    :param df_sync:         list of pandas DataFrames containing column "Alpha"
-
-    :return: df_cl_cd:      merged dataframe with lift and drag coefficient at certain times
-    """
-
-    alpha = df_sync.loc[:, "Alpha"] # extracting the synchronized alpha column from df_sync
-    cn = df_cn_ct.loc[:,"cn"]  # extracting the cn column from df_cn_ct
-    ct = df_cn_ct.loc[:,"ct"]  # extracting the ct column from df_cn_ct
-    # calculating lift coefficient
-    cl_values = cn * np.cos(np.deg2rad(alpha)) - ct * np.sin(np.deg2rad(alpha))
-    # calculating drag coefficient
-    cd_values = cn * np.sin(np.deg2rad(alpha)) + ct * np.cos(np.deg2rad(alpha))
-    # creating a Data Frame with column of lift coefficients and drag coefficients
-    df_cl_cd = pd.DataFrame({'cl': cl_values, 'cd_stat': cd_values})
-    
-    # apply wind tunnel wall correction
-    lambda_series = lambda_wall_corr['lambda'] #lambda_wall_corr is a Series
-    df_cl_cd['cl'] = df_cl_cd['cl'] * (1 - 2 * lambda_series * (sigma_wall_corr + xi_wall_corr)-sigma_wall_corr)
-    df_cl_cd['cd_stat'] = df_cl_cd['cd_stat'] * (1 - 2 * lambda_series * (sigma_wall_corr + xi_wall_corr))
-    
-    
-    return df_cl_cd
-
-def sort_rake_data(df_sync, num_columns):
-    """
-    prepares dataframe for cd calculation with ptot_rake_ , pstat_rake_ , ptot and pstat
-    :param df_sync:                 synchronized data
-    :param num columns:             number of measuring points of ptot_rake (usually 32)
-    :return:df_sync_rake_sort       dataframe with necessary data for cd calculation
-    """
-    # extracts index of df_sync (=time) and generates new pandas dataframe df_rake_stat
-    index = df_sync.index
-    columns = [f'pstat_rake_{i+1}' for i in range(num_columns)]
-    df_rake_stat = pd.DataFrame(index=index, columns=columns)
-    
-    # Fill four columns with measured pstat of wake rake
-    df_rake_stat.iloc[:, 0] = df_sync['pstat_rake_1']
-    df_rake_stat.iloc[:, 10] = df_sync['pstat_rake_2']
-    df_rake_stat.iloc[:, 21] = df_sync['pstat_rake_3']
-    df_rake_stat.iloc[:, 31] = df_sync['pstat_rake_4']
-    
-    # Interpolate the columns
-    df_sync_rake_sort = df_rake_stat.astype(float).interpolate(axis=1)
-    
-    # Add the 'pstat' and 'ptot' columns from df_sync_stat_sort
-    df_sync_rake_sort['pstat'] = df_sync_stat_sort['pstat'].values
-    df_sync_rake_sort['ptot'] = df_sync_stat_sort['ptot'].values
-    
-    filtered_columns = [col for col in df_sync.columns if col.startswith('ptot_rake_')]
-
-    # Insert filtered columns at the beginning of df_sync_rake_sort
-    for col in reversed(filtered_columns):
-        df_sync_rake_sort.insert(0, col, df_sync[col])
-
-    return df_sync_rake_sort
-
-def calc_rake_cd(df, lambda_wall_corr, sigma_wall_corr, xi_wall_corr):
-    """
-    Calculates drag coefficient cd based on wake rake measurements, provided by pandas dataframe df_sync_rake_sort
-    calculation according Hinz eq. 2.12, applying wind tunnel correction according Althasus eq. 36
-    :param df:              dataframe with synchronized data; columns: ptot_rake_i and pstat_rake_i (i=1...32; from wake rake) /
-                            pstat and ptot from free flow (provided by pitot static unit)
-    :return:df_cd_rake      dataframe with drag coefficient cd
-    """
-    # Create a list of column names for ptot_rake_i and pstat_rake_i
-    ptot_cols = [f'ptot_rake_{i}' for i in range(1, 33)]
-    pstat_cols = [f'pstat_rake_{i}' for i in range(1, 33)]
-    
-    # Verify columns exist in the DataFrame
-    for col in  ['pstat', 'ptot'] + ptot_cols + pstat_cols:
-        if col not in df.columns:
-            raise KeyError(f"Column '{col}' not found in DataFrame")
-    
-    # Create a new dataframe with the deltas
-    df_delta_numA = abs(df[ptot_cols].values - df[pstat_cols].values)
-    df_delta_numB = abs(df[ptot_cols].values - df['pstat'].values[:, None])
-    df_delta_denom = abs(df['ptot'].values[:, None] - df['pstat'].values[:, None])
-    
-    # Identify negative values and set them to NaN (negative square root!)
-    df_delta_numA[df_delta_numA < 0] = np.nan
-    df_delta_numB[df_delta_numB < 0] = np.nan
-    df_delta_denom[df_delta_denom < 0] = np.nan
-    
-    # Perform the calculations
-    result = np.sqrt(df_delta_numA / df_delta_denom) * (1 - np.sqrt(df_delta_numB / df_delta_denom))
-    
-    # Define trapezoidal rule integration
-    def trapezoidal_rule(y, x):
-        """
-        Apply the trapezoidal rule for integration.
-        :param y: array of function values at the sample points
-        :param x: array of sample points
-        :return: numerical integral
-        """
-        return np.trapz(y, x)
-    
-    # Assuming positions of the measurement points are equidistant
-    x_rake = np.linspace(0, 1, 32)
-    # integrating
-    cd_rake = np.apply_along_axis(lambda y: trapezoidal_rule(y[~np.isnan(y)], x_rake[~np.isnan(y)]), 1, result) * 2
-    
-    # Create a DataFrame with the cd_rake results and the same index as the df input dataframe
-    df_cd_rake = pd.DataFrame({'cd_rake': cd_rake}, index=df.index)
-    
-    # apply wind tunnel wall correction
-    lambda_series = lambda_wall_corr['lambda'] #lambda_wall_corr is a Series
-    df_cd_rake['cd_rake'] = df_cd_rake['cd_rake'] * (1 - 2 * lambda_series * (sigma_wall_corr + xi_wall_corr))
-    
-    return df_cd_rake
-
-def plot(df, start_time, end_time, column_name_x, column_name_y):
-    """
-    generates plots of pandas DataFrame containing Time in row index and the specified column name in 
-    parameter column_name between specified time interval
-    :param df:                  pandas dataframe
-    :param start_time:          time at which plot begins
-    :param start_time:          time at which plot ends
-    :param column_name_x:       this column name will be plotted on x axis (if time: enter 'time')
-    :param column_name_y:       this column name will be plotted on y axis
-    :return:1                   placeholder return value
-    """
-    # Filter the DataFrame based on the start and end times
-    if start_time is not None:
-        df = df[df.index >= start_time]
-    if end_time is not None:
-        df = df[df.index <= end_time]
-        
-    # Plotting with Matplotlib
-    plt.figure(figsize=(12, 6))
-    if column_name_x == 'time':
-        plt.plot(df.index, df[column_name_y], label=column_name_y, color='blue')
-    else:
-        plt.plot(df[column_name_x], df[column_name_y], label=column_name_y, color='blue')
-    
-    # Calculate the mean value of the filtered DataFrame
-    mean_value = df[column_name_y].mean()
-    # Add a horizontal line for the mean value
-    plt.axhline(mean_value, color='red', linestyle='--', label=f'Mean Value: {mean_value:.2f}')
-    
-    # Adding titles and labels
-    if column_name_x == 'time':
-        plt.title(f'{column_name_y} vs Time')
-        plt.xlabel('Time')
-    else:
-        plt.title(f'{column_name_y} vs {column_name_x}')
-        plt.xlabel(f'{column_name_y}')
-    
-    plt.ylabel(column_name_y)
-    plt.legend()
-    
-    # Display the plot
-    plt.show()
-    
-    return 1
-
-def plot_cl_cd_rake(df_cl_cd, df_cd_rake, start_time, end_time):
-    """
-    specialized plot method to generate plot of pandas DataFrames; one containing cl, the other cd_rake between specified time interval
-    :param df_cl_cd:            pandas dataframe containing 'cl' column
-    :param df_cd_rake:          pandas dataframe containing 'cd_rake' column
-    :param start_time:          time at which plot begins
-    :param start_time:          time at which plot ends
-    :return:1                   placeholder return value
-    """
-    # Filter the DataFrame based on the start and end times for df_cl_cd
-    if start_time is not None:
-        df_cl_cd = df_cl_cd[df_cl_cd.index >= start_time]
-    if end_time is not None:
-        df_cl_cd = df_cl_cd[df_cl_cd.index <= end_time]
-    # Filter the DataFrame based on the start and end times for df_cd_rake
-    if start_time is not None:
-        df_cd_rake = df_cd_rake[df_cd_rake.index >= start_time]
-    if end_time is not None:
-        df_cd_rake = df_cd_rake[df_cd_rake.index <= end_time]
-        
-    # Plotting with Matplotlib
-    plt.figure(figsize=(12, 6))
-    plt.plot(df_cl_cd['cl'], df_cd_rake['cd_rake'], label='cl', color='blue')
-    
-    # Adding titles and labels
-    plt.title('cl vs cw_rake')
-    plt.xlabel('cw_rake')
-    plt.ylabel('cl')
-    plt.legend()
-    
-    # Display the plot
-    plt.show()
-    
-    return 1
-
-def plot_cl_alpha(df_cl_cd, df_sync, start_time, end_time):
-    """
-    specialized plot method to generate plot of pandas DataFrames; one containing cl, the other alpha between specified time interval
-    :param df_cl_cd:            pandas dataframe containing 'cl' column
-    :param df_cd_rake:          pandas dataframe containing 'cd_rake' column
-    :param start_time:          time at which plot begins
-    :param start_time:          time at which plot ends
-    :return:1                   placeholder return value
-    """
-    # Filter the DataFrame based on the start and end times for df_cl_cd
-    if start_time is not None:
-        df_cl_cd = df_cl_cd[df_cl_cd.index >= start_time]
-    if end_time is not None:
-        df_cl_cd = df_cl_cd[df_cl_cd.index <= end_time]
-    # Filter the DataFrame based on the start and end times for df_cd_rake
-    if start_time is not None:
-        df_sync = df_sync[df_sync.index >= start_time]
-    if end_time is not None:
-        df_sync = df_sync[df_sync.index <= end_time]
-        
-    # Plotting with Matplotlib
-    plt.figure(figsize=(12, 6))
-    plt.plot(df_cl_cd['cl'], df_sync['Alpha'], label='cl', color='blue')
-    
-    # Adding titles and labels
-    plt.title('cl vs alpha')
-    plt.xlabel('alpha')
-    plt.ylabel('cl')
-    plt.legend()
-    
-    # Display the plot
-    plt.show()
-    
-    return 1
 
 
 
@@ -826,6 +623,7 @@ if __name__ == '__main__':
     file_path_airfoil = os.path.join(WDIR,  'Messpunkte Demonstrator.xlsx')
     pickle_path_airfoil = os.path.join(WDIR,  'Messpunkte Demonstrator.p')
     pickle_path_calibration = os.path.join(WDIR,  '20230926-171332_sensor_calibration_data.p')
+    cp_path_wall_correction = os.path.join(WDIR, 'B200-0_reinitialized.cp')
 
     flap_pivots = np.array([[0.325, 0.0], [0.87, -0.004]])
 
@@ -859,36 +657,35 @@ if __name__ == '__main__':
     df_sync = synchronize_data([pstat_K02, pstat_K03, pstat_K04, ptot_rake,pstat_rake, alphas, GPS, drive])
 
     # apply calibration offset from calibration file
-    #df_sync, l_ref = apply_calibration_offset(pickle_path_calibration, df_sync)
+    df_sync, l_ref = apply_calibration_offset(pickle_path_calibration, df_sync)
 
     # apply calibration offset from first 20 seconds
     l_ref = 0.5
+    T_air = 288
     df_sync = apply_calibration_20sec(df_sync)
 
     # read airfoil data
-    df_airfoil = read_airfoil_geometry(file_path_airfoil, c=l_ref, foil_source=foil_coord_path, eta_flap=0.0,
+    df_airfoil, airfoil = read_airfoil_geometry(file_path_airfoil, c=l_ref, foil_source=foil_coord_path, eta_flap=0.0,
                                        pickle_file=pickle_path_airfoil)
 
-    # calculate airspeed from pitot static system
-    df_sync = calc_U_CAS(df_sync, prandtl_data)
-
     # calculate wind component
-    df_sync = calc_wind(df_sync)
+    df_sync = calc_airspeed_wind(df_sync, prandtl_data, T_air, l_ref)
 
     # calculate pressure coefficients
     df_sync = calc_cp(df_sync, prandtl_data, pressure_data_ident_strings=['stat', 'ptot'])
 
-    # calculate lift coefficients
-    cl = calc_cl_cm_cdp(df_sync, df_airfoil, flap_pivots)
-
-    # calculate drag coefficients
-    cd = calc_cd(df_sync, l_ref)
-
-    # calculate drag coefficients
-    #cd = calc_cd(df, n_sens=32)
-
     # calculate wall correction coefficients
-    #lambda_wall_corr, sigma_wall_corr, xi_wall_corr = calc_wall_correction_coefficients(df_airfoil, df_cp)
+    lambda_wall, sigma_wall, xi_wall = calc_wall_correction_coefficients(df_airfoil, cp_path_wall_correction, l_ref)
+
+    # calculate lift coefficients
+    df_sync = calc_cl_cm_cdp(df_sync, df_airfoil, airfoil, flap_pivots, lambda_wall, sigma_wall, xi_wall)
+
+    # calculate drag coefficients
+    df_sync = calc_cd(df_sync, l_ref, lambda_wall, sigma_wall, xi_wall)
+
+
+
+
 
     print("done")
 
@@ -896,20 +693,8 @@ if __name__ == '__main__':
 
 
 
-    #df_cl_cd = calc_cl_cd(df_cn_ct, df_sync)
-    #df_sync_rake_sort = sort_rake_data(df_sync, num_columns=32)
-    #df_cd_rake = calc_rake_cd(df_sync_rake_sort, lambda_wall_corr, sigma_wall_corr, xi_wall_corr)
-    #plot(df_cl_cd, start_time, end_time, 'time', 'cl')
-    #plot(df_cl_cd, start_time, end_time, 'time', 'cd_stat')
-    #plot(df_cd_rake, start_time, end_time, 'time', 'cd_rake')
-    #plot(df_cl_cd, start_time, end_time, 'cd_stat', 'cl')
-    #plot_cl_cd_rake(df_cl_cd, df_cd_rake, start_time, end_time)
-    #plot_cl_alpha(df_cl_cd, df_sync, start_time, end_time)
-    
     
 
-    
-    print('done')
 
 
 
