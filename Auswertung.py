@@ -55,40 +55,49 @@ def read_AOA_file(filename, t0):
 
     return df
 
-def read_GPS(filename, t0):
-    """
-    --> Reads GPS data into pandas DataFrame
-    --> Converts GPS speed from km/h to m/s
-    --> Converts 'Time' column into timestamp with start time t0
-    :param filename:       File name
-    :param t0:             start time (=first timestamp of a defined pandas DataFrame)
-    :return: df            pandas DataFrame with GPS data
-    """
+def read_GPS(filename):
+    df = pd.read_csv(filename, header=None)
+    # Apply the parsing function to each row
+    parsed_data = df.apply(parse_gprmc_row, axis=1)
 
-    # list of column numbers in file to be read
-    col_use = [1, 3, 5, 7]
-    # how to name the columns in the df
-    col_name = ['Time', 'Latitude N/S', 'Longitude E/W',  'U_GPS']
+    # Extract the columns from the parsed data
+    df_parsed = pd.DataFrame(parsed_data.tolist(), columns=['Time', 'Latitude', 'Longitude', 'U_GPS'])
 
-    # read file
-    df = pd.read_csv(filename, header=None, usecols=col_use, names=col_name, on_bad_lines='skip',engine='python')
+    # Drop rows with any None values (if any invalid GPRMC sentences)
+    df_parsed = df_parsed.dropna()
 
-    # convert km/h into m/s
-    df['U_GPS'] = df['U_GPS'] / 3.6
+    return df_parsed
+def parse_gprmc_row(row):
+    parts = row.tolist()
+    parts = [str(part) for part in parts]
+    if len(parts) >= 13 and parts[0] == '$GPRMC' and parts[2] == 'A':
+        try:
+            time_str = parts[1]
+            date_str = parts[9]
+            latitude = float(parts[3][:2]) + float(parts[3][2:]) / 60.0
+            if parts[4] == 'S':
+                latitude = -latitude
+            longitude = float(parts[5][:2]) + float(parts[5][2:]) / 60.0
+            if parts[6] == 'W':
+                longitude = -longitude
+            gps_speed = float(parts[7]) * 1.852/3.6
 
-    # drop lines with missing data
-    df = df.dropna().reset_index(drop=True)
+            # Convert time and date to datetime
+            datetime_str = date_str + time_str
+            seconds, microseconds = datetime_str.split('.')
+            microseconds = microseconds.ljust(6, '0')  # Pad to ensure 6 digits
+            datetime_str = f"{seconds}.{microseconds}"
+            datetime_format = '%d%m%y%H%M%S.%f'
+            datetime_val = pd.to_datetime(datetime_str, format=datetime_format)
 
-    # Calculate the time difference in seconds from the first row
-    time_diff = df['Time'] - df['Time'].iloc[0]
+            return datetime_val, latitude, longitude, gps_speed
+        except (ValueError, IndexError) as e:
+            # Handle any parsing errors
+            return None, None, None, None
+    else:
+        return None, None, None, None
 
-    # Add this difference to the start time (in seconds) and convert back to datetime
-    df['Time'] = pd.to_datetime(t0.timestamp() + time_diff, unit='s')
-
-
-    return(df)
-
-def read_drive(filename):
+def read_drive(filename, t0):
     """
     --> Reads drive data of wake rake (position and speed) into pandas DataFrame
     --> combines Date and Time to one pandas datetime column
@@ -111,6 +120,14 @@ def read_drive(filename):
     # drop date column (date column may generate problems when synchronizing data)
     df = df.drop(columns='Date')
 
+    # Convert start time to milliseconds since it is easier to handle arithmetic operations
+    start_time_ms = t0.timestamp() * 1000
+
+    # Calculate the time difference in milliseconds from the first row
+    time_diff_ms = df['Time'] - df['Time'].iloc[0]
+
+    # Add this difference to the start time (in milliseconds) and convert back to datetime
+    df['Time'] = pd.to_datetime(pd.Timestamp(start_time_ms, unit='ms') + time_diff_ms, unit='ms')
 
     return df
 
@@ -331,7 +348,7 @@ def calc_cp(df, prandtl_data, pressure_data_ident_strings):
 
     return df
 
-def calc_cl_cm_cdp(df, df_airfoil):
+def calc_cl_cm_cdp(df, df_airfoil, flap_pivots=[]):
     """
     calculates lift coefficient
     :param df:                  list of pandas DataFrames containing cp values
@@ -347,19 +364,71 @@ def calc_cl_cm_cdp(df, df_airfoil):
                                              np.sin(np.deg2rad(df['Alpha']))])).T
 
     # assign tap index to sensor unit and sensor port
-    sens_ident_cols = ["static_K0{0:d}_{1:d}".format(df_airfoil.loc[i, "Sensor unit K"], df_airfoil.loc[i, "Sensor port"]) for i in df_airfoil.index]
+    sens_ident_cols = ["static_K0{0:d}_{1:d}".format(df_airfoil.loc[i, "Sensor unit K"], df_airfoil.loc[i,
+                        "Sensor port"]) for i in df_airfoil.index]
 
-    # create results dataframe
-    df_res = pd.DataFrame(index=df.index)
+    # calculate cl
+    cp = df[sens_ident_cols].to_numpy()
+    df["cl"] = -integrate.simpson(cp * n_proj_z, x=df_airfoil['s'])
 
-    df["cl"] = -integrate.simpson(df[sens_ident_cols] * n_proj_z, x=df_airfoil['s'])
+    # calculate pressure drag
+    df["cdp"] = -integrate.simpson(cp * n_proj_x, x=df_airfoil['s'])
+
+    n_taps = df_airfoil[['x_n', 'y_n']].to_numpy()
+    s_taps = df_airfoil['s']
+
+    # calculate hinge moment
+    r_ref = np.tile(np.array([0.25, 0]), [len(df_airfoil.index), 1]) - df_airfoil[['x', 'y']].to_numpy()
+    df["cm"] = -integrate.simpson(cp * np.tile(np.cross(n_taps, r_ref), [len(df.index), 1]),
+                                  x=s_taps)
+
+    # calculate hinge moment of trailing edge flap
+    n_flaps = len(flap_pivots)
+    flap_pivots = np.array(flap_pivots)
+    TE_flap = False
+    LE_flap = False
+    if n_flaps >= 1:
+        TE_flap = True
+        flap_pivot_TE = flap_pivots
+    if n_flaps > 1:
+        LE_flap = True
+        flap_pivot_LE = flap_pivots[0, :]
+        flap_pivot_TE = flap_pivots[1, :]
+    if TE_flap:
+        r_ref_F = df_airfoil[['x', 'y']].to_numpy() - np.tile(flap_pivot_TE, [len(df_airfoil.index), 1])
+        mask = df_airfoil['x'].to_numpy() >= flap_pivot_TE[0]
+        df["cmr_TE"] = integrate.simpson(cp[:, mask] * np.tile(np.cross(n_taps[mask], r_ref_F[mask, :]),
+                                              [len(df.index), 1]), x=s_taps[mask])
+    if LE_flap:
+        r_ref_F = df_airfoil[['x', 'y']].to_numpy() - np.tile(flap_pivot_LE, [len(df_airfoil.index), 1])
+        mask = df_airfoil['x'].to_numpy() <= flap_pivot_LE[0]
+        df["cmr_LE"] = integrate.simpson(cp[:, mask] * np.tile(np.cross(n_taps[mask], r_ref_F[mask, :]),
+                                              [len(df.index), 1]), x=s_taps[mask])
 
     """fig, ax = plt.subplots()
     ax.plot(df_airfoil["x"], df_airfoil["y"], "k-")
     ax.plot(df_airfoil["x"], -df[sens_ident_cols].iloc[15000], "b.-")
-    plt.axis("equal")"""
+    plt.axis("equal")
 
+    fig2, ax2 = plt.subplots()
+    ax3 = ax2.twinx()
+    ax3.plot(df.loc[df["U_CAS"] > 25].index, df.loc[df["U_CAS"] > 25, "Alpha"], "y-", label=r"$\alpha$")
+    ax2.plot(df.loc[df["U_CAS"] > 25].index, df.loc[df["U_CAS"] > 25, "cl"], "k-", label="$c_l$")
+    #ax2.plot(df.loc[df["U_CAS"] > 25].index, df.loc[df["U_CAS"] > 25, "cd"], "r-", label="$c_d$")
+    ax2.plot(df.loc[df["U_CAS"] > 25].index, df.loc[df["U_CAS"] > 25, "cm"], "r-", label="$c_{m}$")
+    ax2.plot(df.loc[df["U_CAS"] > 25].index, df.loc[df["U_CAS"] > 25, "cmr_LE"], "g-", label="$c_{m,r,LE}$")
+    ax2.plot(df.loc[df["U_CAS"] > 25].index, df.loc[df["U_CAS"] > 25, "cmr_TE"], "b-", label="$c_{m,r,TE}$")
 
+    ax2.grid()
+    fig2.legend()
+
+    fig4, ax4, = plt.subplots()
+    ax4.plot(df_airfoil["x"], -cp[40000, :])
+    
+    fig5, ax5 = plt.subplots()
+    ax5.plot(df["Longitude"], df["Latitude"], "k-")
+    ax5.plot(df.loc[df["U_CAS"] > 25, "Longitude"], df.loc[df["U_CAS"] > 25, "Latitude"], "g-")
+    """
 
     return df
 
@@ -397,7 +466,7 @@ def calc_cd(df, l_ref):
 
 def apply_calibration_offset(filename, df):
 
-    with open(pickle_path_calibration, "rb") as file:
+    with open(filename, "rb") as file:
         calibr_data = pickle.load(file)
 
     l_ref = calibr_data[6]
@@ -746,23 +815,26 @@ if __name__ == '__main__':
     else:
         WDIR = "D:/Python_Codes/Workingdirectory_Auswertung"
 
-    file_path_drive         = os.path.join(WDIR,  '20230926-1713_drive.dat')
-    file_path_AOA           = os.path.join(WDIR,  '20230926-1713_AOA.dat')
-    file_path_pstat_K02     = os.path.join(WDIR,  '20230926-1713_static_K02.dat')
-    file_path_pstat_K03     = os.path.join(WDIR,  '20230926-1713_static_K03.dat')
-    file_path_pstat_K04     = os.path.join(WDIR,  '20230926-1713_static_K04.dat')
-    file_path_ptot_rake     = os.path.join(WDIR,  '20230926-1713_ptot_rake.dat')
-    file_path_pstat_rake    = os.path.join(WDIR,  '20230926-1713_pstat_rake.dat')
-    file_path_GPS           = os.path.join(WDIR,  '20230926-1713_GPS.dat')
-    file_path_airfoil       = os.path.join(WDIR,  'Messpunkte Demonstrator.xlsx')
-    pickle_path_airfoil     = os.path.join(WDIR,  'Messpunkte Demonstrator.p')
+    file_path_drive = os.path.join(WDIR,  '20230926-1713_drive.dat')
+    file_path_AOA = os.path.join(WDIR,  '20230926-1713_AOA.dat')
+    file_path_pstat_K02 = os.path.join(WDIR,  '20230926-1713_static_K02.dat')
+    file_path_pstat_K03 = os.path.join(WDIR,  '20230926-1713_static_K03.dat')
+    file_path_pstat_K04 = os.path.join(WDIR,  '20230926-1713_static_K04.dat')
+    file_path_ptot_rake = os.path.join(WDIR,  '20230926-1713_ptot_rake.dat')
+    file_path_pstat_rake = os.path.join(WDIR,  '20230926-1713_pstat_rake.dat')
+    file_path_GPS = os.path.join(WDIR,  '20230926-1713_GPS.dat')
+    file_path_airfoil = os.path.join(WDIR,  'Messpunkte Demonstrator.xlsx')
+    pickle_path_airfoil = os.path.join(WDIR,  'Messpunkte Demonstrator.p')
     pickle_path_calibration = os.path.join(WDIR,  '20230926-171332_sensor_calibration_data.p')
+
+    flap_pivots = np.array([[0.325, 0.0], [0.87, -0.004]])
 
     prandtl_data = {"unit name static": "static_K04", "i_sens_static": 31,
                     "unit name total": "static_K04", "i_sens_total": 32}
 
     start_time = "2023-08-04 21:58:19"
     end_time = "2023-08-04 21:58:49"
+
 
     if os.getlogin() == 'joeac':
         foil_coord_path = ("C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Data Brezn/"
@@ -773,15 +845,15 @@ if __name__ == '__main__':
     os.chdir(WDIR)
 
     # read sensor data
-    drive           = read_drive(file_path_drive)
-    alphas          = read_AOA_file(file_path_AOA,t0=drive["Time"].iloc[0])
-    alpha_mean      = calc_mean(alphas, start_time, end_time)
-    GPS             = read_GPS(file_path_GPS, t0=drive["Time"].iloc[0])
-    pstat_K02       = read_DLR_pressure_scanner_file(file_path_pstat_K02, n_sens=32, t0=drive["Time"].iloc[0])
-    pstat_K03       = read_DLR_pressure_scanner_file(file_path_pstat_K03, n_sens=32, t0=drive["Time"].iloc[0])
-    pstat_K04       = read_DLR_pressure_scanner_file(file_path_pstat_K04, n_sens=32, t0=drive["Time"].iloc[0])
-    ptot_rake       = read_DLR_pressure_scanner_file(file_path_ptot_rake, n_sens=32, t0=drive["Time"].iloc[0])
-    pstat_rake      = read_DLR_pressure_scanner_file(file_path_pstat_rake, n_sens=5, t0=drive["Time"].iloc[0])
+    GPS = read_GPS(file_path_GPS)
+    drive = read_drive(file_path_drive, t0=GPS["Time"].iloc[0])
+    alphas = read_AOA_file(file_path_AOA, t0=GPS["Time"].iloc[0])
+    #alpha_mean = calc_mean(alphas, start_time, end_time)
+    pstat_K02 = read_DLR_pressure_scanner_file(file_path_pstat_K02, n_sens=32, t0=GPS["Time"].iloc[0])
+    pstat_K03 = read_DLR_pressure_scanner_file(file_path_pstat_K03, n_sens=32, t0=GPS["Time"].iloc[0])
+    pstat_K04 = read_DLR_pressure_scanner_file(file_path_pstat_K04, n_sens=32, t0=GPS["Time"].iloc[0])
+    ptot_rake = read_DLR_pressure_scanner_file(file_path_ptot_rake, n_sens=32, t0=GPS["Time"].iloc[0])
+    pstat_rake = read_DLR_pressure_scanner_file(file_path_pstat_rake, n_sens=5, t0=GPS["Time"].iloc[0])
 
     # synchronize sensor data
     df_sync = synchronize_data([pstat_K02, pstat_K03, pstat_K04, ptot_rake,pstat_rake, alphas, GPS, drive])
@@ -807,7 +879,7 @@ if __name__ == '__main__':
     df_sync = calc_cp(df_sync, prandtl_data, pressure_data_ident_strings=['stat', 'ptot'])
 
     # calculate lift coefficients
-    cl = calc_cl_cm_cdp(df_sync, df_airfoil)
+    cl = calc_cl_cm_cdp(df_sync, df_airfoil, flap_pivots)
 
     # calculate drag coefficients
     cd = calc_cd(df_sync, l_ref)
