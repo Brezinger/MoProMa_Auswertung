@@ -12,7 +12,13 @@ import pandas as pd
 import math
 from itertools import chain
 from datetime import datetime, timedelta
+
 import matplotlib.pyplot as plt
+from matplotlib.dates import DateFormatter
+from matplotlib import cm
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
+
 from scipy.integrate import simps
 from scipy import interpolate, integrate, optimize, stats
 #sys.path.append("/put_airfoilwinggeometry_source_here/")
@@ -22,7 +28,7 @@ from airfoilwinggeometry.AirfoilPackage import AirfoilTools as at
 
 
 
-def read_AOA_file(filename, t0):
+def read_AOA_file(filename, sigma_wall, t0):
     """
     Converts raw AOA data to pandas DataFrame
     :param filename:       File name
@@ -53,6 +59,9 @@ def read_AOA_file(filename, t0):
     # Add this difference to the start time (in milliseconds) and convert back to datetime
     df['Time'] = pd.to_datetime(pd.Timestamp(start_time_ms, unit='ms') + time_diff_ms, unit='ms')
 
+    # apply wind tunnel wall corrections
+    df.loc[:, "Alpha"] = df["Alpha"] * (1 + sigma_wall)
+
     return df
 
 def read_GPS(filename):
@@ -68,6 +77,11 @@ def read_GPS(filename):
 
     return df_parsed
 def parse_gprmc_row(row):
+    """
+    processes GPS data in gprmc format
+    :param row:
+    :return:
+    """
     parts = row.tolist()
     parts = [str(part) for part in parts]
     if len(parts) >= 13 and parts[0] == '$GPRMC' and parts[2] == 'A':
@@ -96,7 +110,6 @@ def parse_gprmc_row(row):
             return None, None, None, None
     else:
         return None, None, None, None
-
 def read_drive(filename, t0):
     """
     --> Reads drive data of wake rake (position and speed) into pandas DataFrame
@@ -106,9 +119,9 @@ def read_drive(filename, t0):
     :return: df            pandas DataFrame with drive data
     """
     # list of column numbers in file to be read
-    col_use = [0, 1, 2]
+    col_use = [0, 1, 2, 3]
     # how columns are named
-    col_name = ['Date', 'Time', 'Drive']
+    col_name = ['Date', 'Time', 'Rake Position', 'Rake Speed']
 
     # read file
     df = pd.read_csv(filename, sep="\s+", skiprows = 1, header=None, names=col_name, usecols=col_use,
@@ -147,7 +160,6 @@ def calc_mean(df, start_time, end_time):
     mean_value = float(mean_values.iloc[0])
     
     return mean_value
-
 def read_DLR_pressure_scanner_file(filename, n_sens, t0):
     """
     Converts raw sensor data to pandas DataFrame
@@ -192,7 +204,6 @@ def read_DLR_pressure_scanner_file(filename, n_sens, t0):
     df['Time'] = pd.to_datetime(start_time_ms + time_diff_ms, unit='ms')
 
     return df
-
 def synchronize_data(merge_dfs_list):
     """
     synchronizes and interpolates sensor data, given in pandas DataFrames with a timestamp
@@ -213,7 +224,6 @@ def synchronize_data(merge_dfs_list):
     merged_df = merged_df.interpolate(method='time')
 
     return merged_df
-
 def read_airfoil_geometry(filename, c, foil_source, eta_flap, pickle_file=""):
     """
     --> searchs for pickle file in WD, if not found it creates a new pickle file
@@ -282,7 +292,6 @@ def read_airfoil_geometry(filename, c, foil_source, eta_flap, pickle_file=""):
                 pickle.dump([df, eta_flap], file)
 
     return df, foil
-
 def calc_airspeed_wind(df, prandtl_data, T, l_ref):
     """
     --> calculates wind component in free stream direction
@@ -315,7 +324,6 @@ def calc_airspeed_wind(df, prandtl_data, T, l_ref):
     df['wind_component'] = df['U_TAS'] - df['U_GPS']
 
     return df
-
 def calc_cp(df, prandtl_data, pressure_data_ident_strings):
     """
     calculates pressure coefficient for each static port on airfoil
@@ -350,7 +358,6 @@ def calc_cp(df, prandtl_data, pressure_data_ident_strings):
     df.replace([np.inf, -np.inf], 0., inplace=True)
 
     return df
-
 def calc_cl_cm_cdp(df, df_airfoil, at_airfoil, flap_pivots=[], lambda_wall=0., sigma_wall=0., xi_wall=0.):
     """
     calculates lift coefficient
@@ -424,42 +431,7 @@ def calc_cl_cm_cdp(df, df_airfoil, at_airfoil, flap_pivots=[], lambda_wall=0., s
     # Otherwise, correction would be applied twice
     df.loc[:, sens_ident_cols] = (1 - 2 * lambda_wall * (sigma_wall + xi_wall) - sigma_wall) * df[sens_ident_cols]
 
-    fig, ax = plt.subplots()
-    ax_cp = ax.twinx()
-    ax.plot(at_airfoil.coords[:, 0], at_airfoil.coords[:, 1], "k-")
-    ax.plot(df_airfoil["x"], df_airfoil["y"], "k.")
-    ax_cp.plot(df_airfoil["x"], df[sens_ident_cols].iloc[15000], "b.-")
-    ylim_u, ylim_l = ax_cp.get_ylim()
-    ax_cp.set_ylim([ylim_l, ylim_u])
-    ax.set_xlabel("$x$")
-    ax.set_ylabel("$y$")
-    ax_cp.set_ylabel("$c_p$")
-    ax_cp.grid()
-    ax.axis("equal")
-
-    """
-    fig2, ax2 = plt.subplots()
-    ax3 = ax2.twinx()
-    ax3.plot(df.loc[df["U_CAS"] > 25].index, df.loc[df["U_CAS"] > 25, "Alpha"], "y-", label=r"$\alpha$")
-    ax2.plot(df.loc[df["U_CAS"] > 25].index, df.loc[df["U_CAS"] > 25, "cl"], "k-", label="$c_l$")
-    #ax2.plot(df.loc[df["U_CAS"] > 25].index, df.loc[df["U_CAS"] > 25, "cd"], "r-", label="$c_d$")
-    ax2.plot(df.loc[df["U_CAS"] > 25].index, df.loc[df["U_CAS"] > 25, "cm"], "r-", label="$c_{m}$")
-    ax2.plot(df.loc[df["U_CAS"] > 25].index, df.loc[df["U_CAS"] > 25, "cmr_LE"], "g-", label="$c_{m,r,LE}$")
-    ax2.plot(df.loc[df["U_CAS"] > 25].index, df.loc[df["U_CAS"] > 25, "cmr_TE"], "b-", label="$c_{m,r,TE}$")
-
-    ax2.grid()
-    fig2.legend()
-
-    fig4, ax4, = plt.subplots()
-    ax4.plot(df_airfoil["x"], -cp[40000, :])
-    
-    fig5, ax5 = plt.subplots()
-    ax5.plot(df["Longitude"], df["Latitude"], "k-")
-    ax5.plot(df.loc[df["U_CAS"] > 25, "Longitude"], df.loc[df["U_CAS"] > 25, "Latitude"], "g-")
-    """
-
-    return df
-
+    return df, sens_ident_cols, cp
 def calc_cd(df, l_ref, lambda_wall, sigma_wall, xi_wall):
     """
 
@@ -506,7 +478,7 @@ def apply_calibration_offset(filename, df):
 
     # flatten calibration data list, order like df pressure sensors
     pressure_calibr_data = calibr_data[2] + calibr_data[3] + calibr_data[4] + calibr_data[1] + calibr_data[0]
-    # append zero calibration offsets for alpha, Lat/Lon, U_GPS and Drive
+    # append zero calibration offsets for alpha, Lat/Lon, U_GPS and Rake Position
     pressure_calibr_data += [0]*(len(df.columns) - len(pressure_calibr_data))
 
     df_calibr_pressures = pd.DataFrame(data=[pressure_calibr_data], columns=df.columns)
@@ -518,7 +490,6 @@ def apply_calibration_offset(filename, df):
     df = df - df_calibr_pressures
 
     return df, l_ref
-
 def apply_calibration_20sec(df):
     """
     uses first 20 seconds to calculate pressure sensor calibration offsets
@@ -527,7 +498,7 @@ def apply_calibration_20sec(df):
     """
 
     # select only pressures
-    df_pres = df.iloc[:, :len(df.columns)-5]
+    df_pres = df.iloc[:, :len(df.columns)-6]
 
     # Select the first 20 seconds of data
     first_20_seconds = df_pres[df_pres.index < df_pres.index[0] + pd.Timedelta(seconds=20)]
@@ -539,10 +510,9 @@ def apply_calibration_20sec(df):
     offsets = mean_values - mean_values.mean()
 
     # Apply the calibration to the entire DataFrame
-    df.iloc[:, :len(df.columns)-5] = df.iloc[:, :len(df.columns)-5] - offsets
+    df.iloc[:, :len(df.columns)-6] = df.iloc[:, :len(df.columns)-6] - offsets
 
     return df
-
 def calc_wall_correction_coefficients(df_airfoil, filepath, l_ref):
     """
     calculate wall correction coefficients according to
@@ -587,106 +557,263 @@ def calc_wall_correction_coefficients(df_airfoil, filepath, l_ref):
     xi_wall_corr = -0.00335 * l_ref**2
 
     return lambda_wall_corr, sigma_wall_corr, xi_wall_corr
+def plot_specify_section(df, cp):
+    """
+
+    :param df_sync:
+    :return:
+    """
+
+
+
+    plt.close('all')
+
+    # plot U_CAS over time
+    fig, ax, = plt.subplots()
+    ax.plot(df["U_CAS"])
+    ax.set_xlabel("$Time$")
+    ax.set_ylabel("$U_{CAS} [m/s]$")
+    ax.set_title("$U_{CAS}$ vs. Time")
+    ax.xaxis.set_major_formatter(DateFormatter("%H:%M"))
+
+    # plot alpha, cl, cm, cmr over time
+    fig3, ax3 = plt.subplots()
+    ax4 = ax3.twinx()
+    ax4.plot(df.loc[df["U_CAS"] > 25].index, df.loc[df["U_CAS"] > 25, "Alpha"], "y-", label=r"$\alpha$")
+    ax3.plot(df.loc[df["U_CAS"] > 25].index, df.loc[df["U_CAS"] > 25, "cl"], "k-", label="$c_l$")
+    ax3.plot(df.loc[df["U_CAS"] > 25].index, df.loc[df["U_CAS"] > 25, "cm"], "r-", label="$c_{m}$")
+    ax3.plot(df.loc[df["U_CAS"] > 25].index, df.loc[df["U_CAS"] > 25, "cmr_LE"], "g-", label="$c_{m,r,LE}$")
+    ax3.plot(df.loc[df["U_CAS"] > 25].index, df.loc[df["U_CAS"] > 25, "cmr_TE"], "b-", label="$c_{m,r,TE}$")
+    ax3.xaxis.set_major_formatter(DateFormatter("%H:%M"))
+    ax3.grid()
+    fig3.legend()
+
+    """
+    # plot path of car
+    fig5, ax5 = plt.subplots()
+    ax5.plot(df["Longitude"], df["Latitude"], "k-")
+    ax5.plot(df.loc[df["U_CAS"] > 25, "Longitude"], df.loc[df["U_CAS"] > 25, "Latitude"], "g-")
+    """
+
+    # plot c_d, rake position and rake speed over time
+    fig6, ax6 = plt.subplots()
+    ax7 = ax6.twinx()
+    ax6.plot(df.loc[df["U_CAS"] > 25].index, df.loc[df["U_CAS"] > 25, "cd"], "b-", label="$c_d$")
+    ax7.plot(df.loc[df["U_CAS"] > 25].index, df.loc[df["U_CAS"] > 25, "Rake Position"], "r-", label="rake position")
+    ax7.plot(df.loc[df["U_CAS"] > 25].index, df.loc[df["U_CAS"] > 25, "Rake Speed"], "g-", label="rake speed")
+    ax6.set_xlabel("$Time$")
+    ax7.set_xlabel("Rake Position / Speed")
+    ax6.set_ylabel("$c_d$")
+    ax7.set_ylabel("$Rake Position [mm]$")
+    ax6.set_title("$c_d$ vs. Time")
+    ax6.xaxis.set_major_formatter(DateFormatter("%H:%M"))
+    fig6.legend()
+    ax6.grid()
+
+
+
+    plt.show()
+
+    return 1
+def plot_operating_points(df, df_airfoil, at_airfoil, sens_ident_cols, t):
+    """
+    plots cp(x) and wake depression (x) at certain operating points (alpha, Re and beta)
+    :param df:      pandas dataframe with index time and data to be plotted
+    :param t:       index number of operating point (=time)
+    :return:
+    """
+    h_stat = 100
+    h_tot = 93
+
+    # plot cp(x)
+    fig, ax = plt.subplots()
+    ax_cp = ax.twinx()
+    ax.plot(at_airfoil.coords[:, 0], at_airfoil.coords[:, 1], "k-")
+    ax.plot(df_airfoil["x"], df_airfoil["y"], "k.")
+    ax_cp.plot(df_airfoil["x"], df[sens_ident_cols].iloc[t], "r.-")
+    ylim_u, ylim_l = ax_cp.get_ylim()
+    ax_cp.set_ylim([ylim_l, ylim_u])
+    ax.set_xlabel("$x$")
+    ax.set_ylabel("$y$")
+    ax_cp.set_ylabel("$c_p$")
+    ax_cp.grid()
+    ax.axis("equal")
+
+    # plot wake depression(x)
+    # extract total pressure of wake rake from dataframe
+    cols = df.columns.to_list()
+    cols = df.filter(regex='^ptot')
+    # it is assumed, that 0th sensor is defective (omit that value)
+    cols = cols.iloc[:,1:]
+
+    # positions of total pressure sensors of wake rake
+    z_tot = np.linspace(-h_tot / 2, h_tot / 2, 32, endpoint=True)
+    # bring it to similar dimensions of airfoil
+    z_tot = z_tot / 100;
+    # it is assumed, that 0th sensor is defective (omit that value)
+    z_tot = z_tot[1:]
+
+    # for better appearance, move airfoil to wake depression
+    #df_airfoil_y_corr = df_airfoil["y"] + 0.2
+    df_airfoil_y_corr = at_airfoil.coords[:, 1]+0.16
+
+    fig, ax = plt.subplots()
+    ax_cp = ax.twiny()
+    ax.plot(at_airfoil.coords[:, 0], -df_airfoil_y_corr, "k-")
+    ax_cp.plot(cols.iloc[t], z_tot, "r.-")
+    ylim_u, ylim_l = ax_cp.get_ylim()
+    ax_cp.set_ylim([ylim_l, ylim_u])
+    ax.set_xlabel("$x$")
+    ax.set_ylabel("$y$")
+    ax_cp.set_xlabel("$c_p$")
+    ax.set_title("Wake Depression")
+    ax_cp.grid()
+    ax.axis("equal")
+
+
+    plt.show()
+
+    return 1
+def plot_3D(df):
+    """
+
+    :param df:
+    :return:
+    """
+
+
+    # Create a new figure for the 3D plot
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection='3d')
+
+    # Extract data for the plot
+    x = df.index
+    y = df['U_CAS']
+    z = df['Rake Position']
+
+    # Convert the datetime index to a numerical format for plotting
+    x_num = x.map(pd.Timestamp.toordinal)
+
+    # Create the 3D scatter plot
+    ax.scatter(x_num, y, z, c='r', marker='o')
+
+    # Set labels
+    ax.set_xlabel('Time')
+    ax.set_ylabel('c_d')
+    ax.set_zlabel('Rake Position')
+
+    # Convert the numerical x-axis back to dates for better readability
+    ax.set_xticklabels(x.strftime("%H:%M"))
+
+    # Show the plot
+    plt.show()
+
+    return 1
+
+def plot_polars(df, alpha, Re):
+    """
+
+    :param df:
+    :param alpha:
+    :param Re:
+    :return:
+    """
+
+    delta_alpha = 0.2
+    delta_Re = 0.05e6
+
+    col_alpha =df.loc[df["Alpha"] > delta_alpha, "Alpha"]
+
+
+
+    return 1
 
 
 
 
 
+if os.getlogin() == 'joeac':
+    WDIR = "C:/WDIR/MoProMa_Auswertung/"
+else:
+    WDIR = "D:/Python_Codes/Workingdirectory_Auswertung"
 
+file_path_drive = os.path.join(WDIR, '20230926-1713_drive.dat')
+file_path_AOA = os.path.join(WDIR, '20230926-1713_AOA.dat')
+file_path_pstat_K02 = os.path.join(WDIR, '20230926-1713_static_K02.dat')
+file_path_pstat_K03 = os.path.join(WDIR, '20230926-1713_static_K03.dat')
+file_path_pstat_K04 = os.path.join(WDIR, '20230926-1713_static_K04.dat')
+file_path_ptot_rake = os.path.join(WDIR, '20230926-1713_ptot_rake.dat')
+file_path_pstat_rake = os.path.join(WDIR, '20230926-1713_pstat_rake.dat')
+file_path_GPS = os.path.join(WDIR, '20230926-1713_GPS.dat')
+file_path_airfoil = os.path.join(WDIR, 'Messpunkte Demonstrator.xlsx')
+pickle_path_airfoil = os.path.join(WDIR, 'Messpunkte Demonstrator.p')
+pickle_path_calibration = os.path.join(WDIR, '20230926-171332_sensor_calibration_data.p')
+cp_path_wall_correction = os.path.join(WDIR, 'B200-0_reinitialized.cp')
 
+flap_pivots = np.array([[0.325, 0.0], [0.87, -0.004]])
 
+prandtl_data = {"unit name static": "static_K04", "i_sens_static": 31,
+                "unit name total": "static_K04", "i_sens_total": 32}
 
+start_time = "2023-08-04 21:58:19"
+end_time = "2023-08-04 21:58:49"
 
+if os.getlogin() == 'joeac':
+    foil_coord_path = ("C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Data Brezn/"
+                       "01_Aerodynamic Design/01_Airfoil Optimization/B203/0969/B203-0.dat")
+else:
+    foil_coord_path = "D:/Python_Codes/Workingdirectory_Auswertung/B203-0.dat"
 
+os.chdir(WDIR)
 
+# read airfoil data
+l_ref = 0.5
+df_airfoil, airfoil = read_airfoil_geometry(file_path_airfoil, c=l_ref, foil_source=foil_coord_path, eta_flap=0.0,
+                                            pickle_file=pickle_path_airfoil)
 
+# calculate wall correction coefficients
+lambda_wall, sigma_wall, xi_wall = calc_wall_correction_coefficients(df_airfoil, cp_path_wall_correction, l_ref)
 
-    
-    
+# read sensor data
+GPS = read_GPS(file_path_GPS)
+drive = read_drive(file_path_drive, t0=GPS["Time"].iloc[0])
+alphas = read_AOA_file(file_path_AOA, sigma_wall, t0=GPS["Time"].iloc[0])
+# alpha_mean = calc_mean(alphas, start_time, end_time)
+pstat_K02 = read_DLR_pressure_scanner_file(file_path_pstat_K02, n_sens=32, t0=GPS["Time"].iloc[0])
+pstat_K03 = read_DLR_pressure_scanner_file(file_path_pstat_K03, n_sens=32, t0=GPS["Time"].iloc[0])
+pstat_K04 = read_DLR_pressure_scanner_file(file_path_pstat_K04, n_sens=32, t0=GPS["Time"].iloc[0])
+ptot_rake = read_DLR_pressure_scanner_file(file_path_ptot_rake, n_sens=32, t0=GPS["Time"].iloc[0])
+pstat_rake = read_DLR_pressure_scanner_file(file_path_pstat_rake, n_sens=5, t0=GPS["Time"].iloc[0])
 
+# synchronize sensor data
+df_sync = synchronize_data([pstat_K02, pstat_K03, pstat_K04, ptot_rake, pstat_rake, alphas, GPS, drive])
 
+# apply calibration offset from calibration file
+#df_sync, l_ref = apply_calibration_offset(pickle_path_calibration, df_sync)
 
+# apply calibration offset from first 20 seconds
+T_air = 288
+df_sync = apply_calibration_20sec(df_sync)
 
-if __name__ == '__main__':
+# calculate wind component
+df_sync = calc_airspeed_wind(df_sync, prandtl_data, T_air, l_ref)
 
-    if os.getlogin() == 'joeac':
-        WDIR = "C:/WDIR/MoProMa_Auswertung/"
-    else:
-        WDIR = "D:/Python_Codes/Workingdirectory_Auswertung"
+# calculate pressure coefficients
+df_sync = calc_cp(df_sync, prandtl_data, pressure_data_ident_strings=['stat', 'ptot'])
 
-    file_path_drive = os.path.join(WDIR,  '20230926-1713_drive.dat')
-    file_path_AOA = os.path.join(WDIR,  '20230926-1713_AOA.dat')
-    file_path_pstat_K02 = os.path.join(WDIR,  '20230926-1713_static_K02.dat')
-    file_path_pstat_K03 = os.path.join(WDIR,  '20230926-1713_static_K03.dat')
-    file_path_pstat_K04 = os.path.join(WDIR,  '20230926-1713_static_K04.dat')
-    file_path_ptot_rake = os.path.join(WDIR,  '20230926-1713_ptot_rake.dat')
-    file_path_pstat_rake = os.path.join(WDIR,  '20230926-1713_pstat_rake.dat')
-    file_path_GPS = os.path.join(WDIR,  '20230926-1713_GPS.dat')
-    file_path_airfoil = os.path.join(WDIR,  'Messpunkte Demonstrator.xlsx')
-    pickle_path_airfoil = os.path.join(WDIR,  'Messpunkte Demonstrator.p')
-    pickle_path_calibration = os.path.join(WDIR,  '20230926-171332_sensor_calibration_data.p')
-    cp_path_wall_correction = os.path.join(WDIR, 'B200-0_reinitialized.cp')
+# calculate lift coefficients
+df_sync, sens_ident_cols, cp = calc_cl_cm_cdp(df_sync, df_airfoil, airfoil, flap_pivots, lambda_wall, sigma_wall, xi_wall)
 
-    flap_pivots = np.array([[0.325, 0.0], [0.87, -0.004]])
+# calculate drag coefficients
+df_sync = calc_cd(df_sync, l_ref, lambda_wall, sigma_wall, xi_wall)
 
-    prandtl_data = {"unit name static": "static_K04", "i_sens_static": 31,
-                    "unit name total": "static_K04", "i_sens_total": 32}
+# visualisation
+plot_specify_section(df_sync, cp)
+plot_3D(df_sync)
+plot_operating_points(df_sync, df_airfoil, airfoil, sens_ident_cols, t=40000)
+plot_polars(df_sync, alpha=0, Re=1.1e6)
 
-    start_time = "2023-08-04 21:58:19"
-    end_time = "2023-08-04 21:58:49"
-
-
-    if os.getlogin() == 'joeac':
-        foil_coord_path = ("C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Data Brezn/"
-                           "01_Aerodynamic Design/01_Airfoil Optimization/B203/0969/B203-0.dat")
-    else:
-        foil_coord_path= "D:/Python_Codes/Workingdirectory_Auswertung/B203-0.dat"
-
-    os.chdir(WDIR)
-
-    # read sensor data
-    GPS = read_GPS(file_path_GPS)
-    drive = read_drive(file_path_drive, t0=GPS["Time"].iloc[0])
-    alphas = read_AOA_file(file_path_AOA, t0=GPS["Time"].iloc[0])
-    #alpha_mean = calc_mean(alphas, start_time, end_time)
-    pstat_K02 = read_DLR_pressure_scanner_file(file_path_pstat_K02, n_sens=32, t0=GPS["Time"].iloc[0])
-    pstat_K03 = read_DLR_pressure_scanner_file(file_path_pstat_K03, n_sens=32, t0=GPS["Time"].iloc[0])
-    pstat_K04 = read_DLR_pressure_scanner_file(file_path_pstat_K04, n_sens=32, t0=GPS["Time"].iloc[0])
-    ptot_rake = read_DLR_pressure_scanner_file(file_path_ptot_rake, n_sens=32, t0=GPS["Time"].iloc[0])
-    pstat_rake = read_DLR_pressure_scanner_file(file_path_pstat_rake, n_sens=5, t0=GPS["Time"].iloc[0])
-
-    # synchronize sensor data
-    df_sync = synchronize_data([pstat_K02, pstat_K03, pstat_K04, ptot_rake,pstat_rake, alphas, GPS, drive])
-
-    # apply calibration offset from calibration file
-    df_sync, l_ref = apply_calibration_offset(pickle_path_calibration, df_sync)
-
-    # apply calibration offset from first 20 seconds
-    l_ref = 0.5
-    T_air = 288
-    df_sync = apply_calibration_20sec(df_sync)
-
-    # read airfoil data
-    df_airfoil, airfoil = read_airfoil_geometry(file_path_airfoil, c=l_ref, foil_source=foil_coord_path, eta_flap=0.0,
-                                       pickle_file=pickle_path_airfoil)
-
-    # calculate wind component
-    df_sync = calc_airspeed_wind(df_sync, prandtl_data, T_air, l_ref)
-
-    # calculate pressure coefficients
-    df_sync = calc_cp(df_sync, prandtl_data, pressure_data_ident_strings=['stat', 'ptot'])
-
-    # calculate wall correction coefficients
-    lambda_wall, sigma_wall, xi_wall = calc_wall_correction_coefficients(df_airfoil, cp_path_wall_correction, l_ref)
-
-    # calculate lift coefficients
-    df_sync = calc_cl_cm_cdp(df_sync, df_airfoil, airfoil, flap_pivots, lambda_wall, sigma_wall, xi_wall)
-
-    # calculate drag coefficients
-    df_sync = calc_cd(df_sync, l_ref, lambda_wall, sigma_wall, xi_wall)
-
-
-    print("done")
+print("done")
 
 
 
