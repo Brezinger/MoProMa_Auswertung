@@ -143,23 +143,6 @@ def read_drive(filename, t0):
     df['Time'] = pd.to_datetime(pd.Timestamp(start_time_ms, unit='ms') + time_diff_ms, unit='ms')
 
     return df
-
-def calc_mean(df, start_time, end_time):
-    """
-    Calculates the mean value of every column in the specified time interval
-    :param filename:            File name
-    :param start_time:          begin of interval
-    :param end_time:            time of first interval
-    :return:                    pandas DataFrame with absolute time and pressures
-    """
-    # Select rows between start_time and end_time
-    selected_values = df.loc[(df['Time'] >= start_time) & (df['Time'] <= end_time)]
-    
-    # Calculate the mean value for every column except 'Time'
-    mean_values = selected_values.drop(columns=['Time']).mean()
-    mean_value = float(mean_values.iloc[0])
-    
-    return mean_value
 def read_DLR_pressure_scanner_file(filename, n_sens, t0):
     """
     Converts raw sensor data to pandas DataFrame
@@ -709,28 +692,82 @@ def plot_3D(df):
     plt.show()
 
     return 1
-
-def plot_polars(df, alpha, Re):
+def calc_mean(df, alpha, Re):
     """
-
-    :param df:
-    :param alpha:
-    :param Re:
+    calculates mean values of AOA, lift-, drag- and moment coefficients for a given alpha (automativally given from
+    calc_means when called) and an entered Reynoldsnumber
+    :param df:          pandas dataframe with column names: alpha, cl, cd, cm (given from plot polars function)
+    :param alpha:       automativally given from calc_means when called
+    :param Re:          desired Reynoldsnumber for the test (needs to be typed in function call)
     :return:
     """
-
+    # define Intervalls (might be adapted)
     delta_alpha = 0.2
-    delta_Re = 0.05e6
+    min_alpha = alpha - delta_alpha
+    max_alpha = alpha + delta_alpha
+    delta_Re = 0.2e6
+    min_Re = Re - delta_Re
+    max_Re = Re + delta_Re
 
-    col_alpha =df.loc[df["Alpha"] > delta_alpha, "Alpha"]
+    # pick values which are in the intervalls
+    col_alpha = df.loc[(df["Alpha"] > min_alpha) & (df["Alpha"] < max_alpha) & (df["Re"] > min_Re) & (df["Re"] < max_Re), "Alpha"]
+    col_cl = df.loc[(df["Alpha"] > min_alpha) & (df["Alpha"] < max_alpha) & (df["Re"] > min_Re) & (df["Re"] < max_Re), "cl"]
+    col_cd = df.loc[(df["Alpha"] > min_alpha) & (df["Alpha"] < max_alpha) & (df["Re"] > min_Re) & (df["Re"] < max_Re), "cd"]
+    col_cm = df.loc[(df["Alpha"] > min_alpha) & (df["Alpha"] < max_alpha) & (df["Re"] > min_Re) & (df["Re"] < max_Re), "cm"]
+
+    # calculate mean values
+    mean_alpha = col_alpha.mean()
+    mean_cl = col_cl.mean()
+    mean_cd = col_cd.mean()
+    mean_cm = col_cm.mean()
+
+    return mean_alpha, mean_cl, mean_cd, mean_cm
+def prepare_polar_df(df, Re, alpha_range=range(1, 18)):
+    """
+    iterates over alpha [1,17] deg and calculates to each alpha the mean values of cl, cd and cm; if alpha and Re
+    criteria are not fulfilled, moves on to next alpha value
+    :param df:                  pandas dataframe with all data to be plotted
+    :param alpha_range:         AOA interval for polar
+    :param Re:                  desired Reynoldsnumber for polar
+    :return: df_polars            df with polar values ready to be plotted
+    """
+    # create a new dataframe with specified column names
+    df_polars = pd.DataFrame(columns=["alpha", "cl", "cd", "cm"])
+
+    # iterates over alpha and calls calc_mean function
+    for alpha in alpha_range:
+        mean_alpha, mean_cl, mean_cd, mean_cm = calc_mean(df, alpha, Re)
+        if not pd.isna(mean_cl):  # just added if mean value can be calculated
+            new_row = pd.DataFrame({"alpha": [alpha], "cl": [mean_cl], "cd": [mean_cd], "cm": [mean_cm]})
+            df_polars = pd.concat([df_polars, new_row], ignore_index=True)
+
+    return df_polars
+
+def plot_polars(df):
+    """
+
+    :param df_polars:
+    :return:
+    """
+    # just for testing
+    data = {
+        'alpha': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17],
+        'cl': [0.549671, 0.486173, 0.564769, 0.652303, 0.476585, 0.476586, 0.657921, 0.576743, 0.453052, 0.554256,
+               0.453658, 0.453427, 0.524196, 0.308671, 0.327509, 0.443772, 0.398716]
+    }
+    df = pd.DataFrame(data)
 
 
+    # plot cp(x)
+    fig, ax = plt.subplots()
+    ax.plot(df["alpha"], df["cl"], "k.", marker='o', linestyle='-')
+    ax.set_xlabel("$alpha$")
+    ax.set_ylabel("$c_l$")
+    ax.grid()
+
+    plt.show()
 
     return 1
-
-
-
-
 
 if os.getlogin() == 'joeac':
     WDIR = "C:/WDIR/MoProMa_Auswertung/"
@@ -811,17 +848,9 @@ df_sync = calc_cd(df_sync, l_ref, lambda_wall, sigma_wall, xi_wall)
 plot_specify_section(df_sync, cp)
 plot_3D(df_sync)
 plot_operating_points(df_sync, df_airfoil, airfoil, sens_ident_cols, t=40000)
-plot_polars(df_sync, alpha=0, Re=1.1e6)
+
+df_polars = prepare_polar_df(df_sync, Re=1e6)
+plot_polars(df_polars)
 
 print("done")
-
-
-
-
-
-    
-
-
-
-
 
