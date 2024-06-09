@@ -14,9 +14,11 @@ from itertools import chain
 from datetime import datetime, timedelta
 
 import matplotlib.pyplot as plt
+import matplotlib
 from matplotlib.dates import DateFormatter
 from matplotlib import cm
 import matplotlib.pyplot as plt
+#plt.rcParams['text.usetex'] = True
 from mpl_toolkits.mplot3d import Axes3D
 
 from scipy.integrate import simps
@@ -63,7 +65,6 @@ def read_AOA_file(filename, sigma_wall, t0):
     df.loc[:, "Alpha"] = df["Alpha"] * (1 + sigma_wall)
 
     return df
-
 def read_GPS(filename):
     df = pd.read_csv(filename, header=None)
     # Apply the parsing function to each row
@@ -709,11 +710,18 @@ def calc_mean(df, alpha, Re):
     min_Re = Re - delta_Re
     max_Re = Re + delta_Re
 
-    # pick values which are in the intervalls
-    col_alpha = df.loc[(df["Alpha"] > min_alpha) & (df["Alpha"] < max_alpha) & (df["Re"] > min_Re) & (df["Re"] < max_Re), "Alpha"]
-    col_cl = df.loc[(df["Alpha"] > min_alpha) & (df["Alpha"] < max_alpha) & (df["Re"] > min_Re) & (df["Re"] < max_Re), "cl"]
-    col_cd = df.loc[(df["Alpha"] > min_alpha) & (df["Alpha"] < max_alpha) & (df["Re"] > min_Re) & (df["Re"] < max_Re), "cd"]
-    col_cm = df.loc[(df["Alpha"] > min_alpha) & (df["Alpha"] < max_alpha) & (df["Re"] > min_Re) & (df["Re"] < max_Re), "cm"]
+    # conditions to be representive values
+    condition = ((df["Alpha"] > min_alpha) &
+                 (df["Alpha"] < max_alpha) &
+                 (df["Re"] > min_Re) &
+                 (df["Re"] < max_Re) &
+                 (df["Rake Speed"] != 0))
+
+    # pick values which fulfill the condition
+    col_alpha = df.loc[condition, "Alpha"]
+    col_cl = df.loc[condition, "cl"]
+    col_cd = df.loc[condition, "cd"]
+    col_cm = df.loc[condition, "cm"]
 
     # calculate mean values
     mean_alpha = col_alpha.mean()
@@ -742,7 +750,6 @@ def prepare_polar_df(df, Re, alpha_range=range(1, 18)):
             df_polars = pd.concat([df_polars, new_row], ignore_index=True)
 
     return df_polars
-
 def plot_polars(df):
     """
 
@@ -750,24 +757,58 @@ def plot_polars(df):
     :return:
     """
     # just for testing
+    #********************************************************************************
     data = {
         'alpha': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17],
-        'cl': [0.549671, 0.486173, 0.564769, 0.652303, 0.476585, 0.476586, 0.657921, 0.576743, 0.453052, 0.554256,
-               0.453658, 0.453427, 0.524196, 0.308671, 0.327509, 0.443772, 0.398716]
+        'cl': [0.01, 0.1, 0.15, 0.19, 0.23, 0.27, 0.28, 0.4, 0.45, 0.49,
+               0.6, 0.7, 0.9, 1.3, 1.4, 1.2, 0.99],
+        'cd': [0.01, 0.1, 0.15, 0.19, 0.23, 0.27, 0.28, 0.4, 0.45, 0.49,
+               0.6, 0.7, 0.9, 1.3, 1.4, 1.2, 0.99],
+        'cm': [0.01, 0.1, 0.15, 0.19, 0.23, 0.27, 0.28, 0.4, 0.45, 0.49,
+               0.6, 0.7, 0.9, 1.3, 1.4, 1.2, 0.99]
     }
     df = pd.DataFrame(data)
+    #********************************************************************************
 
 
-    # plot cp(x)
+    # plot cl(alpha)
     fig, ax = plt.subplots()
-    ax.plot(df["alpha"], df["cl"], "k.", marker='o', linestyle='-')
+    ax.plot(df["alpha"], df["cl"], "k.", linestyle='-')
     ax.set_xlabel("$alpha$")
     ax.set_ylabel("$c_l$")
+    ax.set_title("$c_l$ vs. alpha")
     ax.grid()
+
+    # plot cl(cd)
+    fig2, ax2 = plt.subplots()
+    ax2.plot(df["cd"], df["cl"], "k.", linestyle='-')
+    ax2.set_xlabel("$c_d$")
+    ax2.set_ylabel("$c_l$")
+    ax2.set_title("$c_l$ vs. $c_d$")
+    ax2.grid()
+
+    # plot cl(cm)
+    fig3, ax3 = plt.subplots()
+    ax3.plot(df["cm"], df["cl"], "k.", linestyle='-')
+    ax3.set_xlabel("$c_m$")
+    ax3.set_ylabel("$c_l$")
+    ax3.set_title("$c_l$ vs. $c_m$")
+    ax3.grid()
+
+    # plot cm(alpha)
+    fig4, ax4 = plt.subplots()
+    ax4.plot(df["alpha"], df["cm"], "k.", linestyle='-')
+    ax4.set_xlabel("$alpha$")
+    ax4.set_ylabel("$c_m$")
+    ax4.set_title("$c_m$ vs. alpha")
+    ax4.grid()
 
     plt.show()
 
     return 1
+
+
+
 
 if os.getlogin() == 'joeac':
     WDIR = "C:/WDIR/MoProMa_Auswertung/"
@@ -792,9 +833,6 @@ flap_pivots = np.array([[0.325, 0.0], [0.87, -0.004]])
 prandtl_data = {"unit name static": "static_K04", "i_sens_static": 31,
                 "unit name total": "static_K04", "i_sens_total": 32}
 
-start_time = "2023-08-04 21:58:19"
-end_time = "2023-08-04 21:58:49"
-
 if os.getlogin() == 'joeac':
     foil_coord_path = ("C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Data Brezn/"
                        "01_Aerodynamic Design/01_Airfoil Optimization/B203/0969/B203-0.dat")
@@ -802,6 +840,8 @@ else:
     foil_coord_path = "D:/Python_Codes/Workingdirectory_Auswertung/B203-0.dat"
 
 os.chdir(WDIR)
+
+
 
 # read airfoil data
 l_ref = 0.5
@@ -815,7 +855,6 @@ lambda_wall, sigma_wall, xi_wall = calc_wall_correction_coefficients(df_airfoil,
 GPS = read_GPS(file_path_GPS)
 drive = read_drive(file_path_drive, t0=GPS["Time"].iloc[0])
 alphas = read_AOA_file(file_path_AOA, sigma_wall, t0=GPS["Time"].iloc[0])
-# alpha_mean = calc_mean(alphas, start_time, end_time)
 pstat_K02 = read_DLR_pressure_scanner_file(file_path_pstat_K02, n_sens=32, t0=GPS["Time"].iloc[0])
 pstat_K03 = read_DLR_pressure_scanner_file(file_path_pstat_K03, n_sens=32, t0=GPS["Time"].iloc[0])
 pstat_K04 = read_DLR_pressure_scanner_file(file_path_pstat_K04, n_sens=32, t0=GPS["Time"].iloc[0])
