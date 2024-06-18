@@ -42,7 +42,7 @@ def read_AOA_file(filename, sigma_wall, t0):
     df = df.dropna()
 
     # Compute the absolute sensor position in degrees
-    abs_sensor_pos_deg = - df['Position'] / 2**14 * 360 - df['Turn'] * 360 + 162.88330078125
+    abs_sensor_pos_deg = - df['Position'] / 2**14 * 360 - df['Turn'] * 360 + 214.73876953125
     # Compute the gear ratio and alpha
     gear_ratio = 60 / (306 * 2)
     df['Alpha'] = abs_sensor_pos_deg * gear_ratio
@@ -179,7 +179,7 @@ def read_DLR_pressure_scanner_file(filename, n_sens, t0):
     df = df.dropna().reset_index(drop=True)
 
     # remove outliers
-    df = df[(np.abs(stats.zscore(df)) < 3).all(axis=1)]
+    #df = df[(np.abs(stats.zscore(df)) < 3).all(axis=1)].reset_index(drop=True)
 
     # Calculate the time difference in milliseconds from the first row
     time_diff_ms = df['Time'] - df['Time'].iloc[0]
@@ -198,8 +198,17 @@ def synchronize_data(merge_dfs_list):
 
     # Merge the DataFrames using merge_asof
     merged_df = merge_dfs_list[0]
+    start = merged_df.loc[0, 'Time']
+    end = merged_df.loc[len(merged_df.index)-1, 'Time']
+    merged_df = merged_df.sort_values(by="Time", ignore_index=True)
+    merged_df = merged_df.loc[(merged_df.Time >= start) & (merged_df.Time <= end)]
     for df in merge_dfs_list[1:]:
-        merged_df = pd.merge_asof(merged_df, df, on='Time', tolerance=pd.Timedelta('1ms'), direction='nearest')
+        start = df.loc[0, 'Time']
+        end = df.loc[len(df.index)-1, 'Time']
+        df = df.sort_values(by="Time", ignore_index=True)
+        df = df.loc[(df.Time >= start) & (df.Time <= end)]
+        merged_df = pd.merge_asof(merged_df, df.sort_values(by="Time", ignore_index=True), on='Time',
+                                  tolerance=pd.Timedelta('1ms'), direction='nearest')
 
     # Set the index to 't_abs' to use time-based interpolation
     merged_df.set_index('Time', inplace=True)
@@ -237,7 +246,7 @@ def read_airfoil_geometry(filename, c, foil_source, eta_flap, pickle_file=""):
     if not os.path.exists(pickle_file) or eta_flap_read != eta_flap:
 
         if eta_flap != 0.0:
-            foil.flap(xFlap=0.8, yFlap=0, etaFlap=5)
+            foil.flap(xFlap=0.8, yFlap=0, etaFlap=eta_flap)
 
         # Read Excel file
         df = pd.read_excel(filename, usecols="A:F", skiprows=1, skipfooter=1)# Read the Excel file
@@ -305,7 +314,7 @@ def calc_airspeed_wind(df, prandtl_data, T, l_ref):
     df['Re'] = df['U_TAS'] * l_ref * rho / mu
 
     # calculating wind component in free stream direction
-    df['wind_component'] = df['U_TAS'] - df['U_GPS']
+    #df['wind_component'] = df['U_TAS'] - df['U_GPS']
 
     return df
 def calc_cp(df, prandtl_data, pressure_data_ident_strings):
@@ -560,18 +569,21 @@ def plot_specify_section(df, cp):
     ax.set_xlabel("$Time$")
     ax.set_ylabel("$U_{CAS} [m/s]$")
     ax.set_title("$U_{CAS}$ vs. Time")
-    ax.xaxis.set_major_formatter(DateFormatter("%H:%M"))
+    ax.xaxis.set_major_formatter(DateFormatter("%M:%S"))
     ax.grid()
 
     # plot alpha, cl, cm, cmr over time
     fig3, ax3 = plt.subplots()
     ax4 = ax3.twinx()
-    ax4.plot(df.loc[df["U_CAS"] > 15].index, df.loc[df["U_CAS"] > 15, "Alpha"], "y-", label=r"$\alpha$")
-    ax3.plot(df.loc[df["U_CAS"] > 15].index, df.loc[df["U_CAS"] > 15, "cl"], "k-", label="$c_l$")
-    ax3.plot(df.loc[df["U_CAS"] > 15].index, df.loc[df["U_CAS"] > 15, "cm"], "r-", label="$c_{m}$")
-    ax3.plot(df.loc[df["U_CAS"] > 15].index, df.loc[df["U_CAS"] > 15, "cmr_LE"], "g-", label="$c_{m,r,LE}$")
-    ax3.plot(df.loc[df["U_CAS"] > 15].index, df.loc[df["U_CAS"] > 15, "cmr_TE"], "b-", label="$c_{m,r,TE}$")
-    ax3.xaxis.set_major_formatter(DateFormatter("%H:%M"))
+    ax4.plot(df.loc[df["U_CAS"] > 15].index, df.loc[df["U_CAS"] > 15, "Alpha"], "k-", label=r"$\alpha$")
+    ax3.plot(df.loc[df["U_CAS"] > 15].index, df.loc[df["U_CAS"] > 15, "cl"], label="$c_l$")
+    ax3.plot(df.loc[df["U_CAS"] > 15].index, df.loc[df["U_CAS"] > 15, "cm"],label="$c_{m}$")
+    #ax3.plot(df.loc[df["U_CAS"] > 15].index, df.loc[df["U_CAS"] > 15, "cmr_LE"], label="$c_{m,r,LE}$")
+    ax3.plot(df.loc[df["U_CAS"] > 15].index, df.loc[df["U_CAS"] > 15, "cmr_TE"], label="$c_{m,r,TE}$")
+    ax3.plot(df.loc[df["U_CAS"] > 15].index, df.loc[df["U_CAS"] > 15, "cd"]*10, label="$c_d \cdot 10$")
+    #ax7.plot(df.loc[df["U_CAS"] > 15].index, df.loc[df["U_CAS"] > 15, "Rake Position"], label="rake position")
+    #ax3.plot(df.loc[df["U_CAS"] > 15].index, df.loc[df["U_CAS"] > 15, "Rake Speed"]*1e-3, label="rake speed$\cdot 10^-3")
+    ax3.xaxis.set_major_formatter(DateFormatter("%M:%S"))
     ax3.grid()
     fig3.legend()
 
@@ -583,25 +595,19 @@ def plot_specify_section(df, cp):
     """
 
     # plot c_d, rake position and rake speed over time
-    fig6, ax6 = plt.subplots()
-    ax7 = ax6.twinx()
-    ax6.plot(df.loc[df["U_CAS"] > 15].index, df.loc[df["U_CAS"] > 15, "cd"], "b-", label="$c_d$")
-    ax7.plot(df.loc[df["U_CAS"] > 15].index, df.loc[df["U_CAS"] > 15, "Rake Position"], "r-", label="rake position")
-    ax7.plot(df.loc[df["U_CAS"] > 15].index, df.loc[df["U_CAS"] > 15, "Rake Speed"], "g-", label="rake speed")
-    ax6.set_xlabel("$Time$")
+    #fig6, ax6 = plt.subplots()
+    #ax7 = ax6.twinx()
+
+    """ax6.set_xlabel("$Time$")
     ax7.set_xlabel("Rake Position / Speed")
     ax6.set_ylabel("$c_d$")
     ax7.set_ylabel("$Rake Position [mm]$")
     ax6.set_title("$c_d$ vs. Time")
-    ax6.xaxis.set_major_formatter(DateFormatter("%H:%M"))
+    ax6.xaxis.set_major_formatter(DateFormatter("%M:%S"))
     fig6.legend()
-    ax6.grid()
+    ax6.grid()"""
 
-
-
-    plt.show()
-
-    return 1
+    return
 def plot_operating_points(df, df_airfoil, at_airfoil, sens_ident_cols, t_start, t_end):
     """
     plots cp(x) and wake depression (x) at certain operating points (alpha, Re and beta)
@@ -669,7 +675,7 @@ def plot_operating_points(df, df_airfoil, at_airfoil, sens_ident_cols, t_start, 
     ax.axis("equal")
 
 
-    plt.show()
+
 
     return 1
 def plot_3D(df):
@@ -704,7 +710,7 @@ def plot_3D(df):
     ax.set_xticklabels(x.strftime("%H:%M"))
 
     # Show the plot
-    plt.show()
+
 
     return 1
 def calc_mean(df, alpha, Re):
@@ -728,8 +734,8 @@ def calc_mean(df, alpha, Re):
     condition = ((df["Alpha"] > min_alpha) &
                  (df["Alpha"] < max_alpha) &
                  (df["Re"] > min_Re) &
-                 (df["Re"] < max_Re) &
-                 (df["Rake Speed"] != 0))
+                 (df["Re"] < max_Re))# &
+                 #(df["Rake Speed"] != 0))
 
     # pick values which fulfill the condition
     col_alpha = df.loc[condition, "Alpha"]
@@ -802,7 +808,7 @@ def plot_polars(df):
     ax4.set_title("$c_m$ vs. alpha")
     ax4.grid()
 
-    plt.show()
+
 
     return 1
 def settling_time_average(df):
@@ -826,8 +832,8 @@ def settling_time_average(df):
     condition = ((df["Alpha"] > min_alpha) &
                  (df["Alpha"] < max_alpha) &
                  (df["Re"] > min_Re) &
-                 (df["Re"] < max_Re) &
-                 (df["Rake Speed"] != 0))
+                 (df["Re"] < max_Re))# &
+                 #(df["Rake Speed"] != 0))
 
     # pick values which fulfill the condition
     col_alpha = df.loc[condition, "Alpha"]
@@ -847,7 +853,7 @@ def settling_time_average(df):
     plt.title('Running Average of cd Over Time')
     plt.legend()
     plt.grid(True)
-    plt.show()
+
 
     return 1
 
@@ -860,6 +866,8 @@ if os.getlogin() == 'joeac':
     WDIR = "C:/WDIR/MoProMa_Auswertung/"
 else:
     WDIR = "D:/Python_Codes/Workingdirectory_Auswertung"
+
+
 
 file_path_drive = os.path.join(WDIR, '20240614-0022_drive.dat')
 file_path_AOA = os.path.join(WDIR, '20240614-0022_AOA.dat')
@@ -908,7 +916,7 @@ ptot_rake = read_DLR_pressure_scanner_file(file_path_ptot_rake, n_sens=32, t0=GP
 pstat_rake = read_DLR_pressure_scanner_file(file_path_pstat_rake, n_sens=5, t0=GPS["Time"].iloc[0])
 
 # synchronize sensor data
-df_sync = synchronize_data([pstat_K02, pstat_K03, pstat_K04, ptot_rake, pstat_rake, alphas, GPS, drive])
+df_sync = synchronize_data([pstat_K02, pstat_K03, pstat_K04, ptot_rake, pstat_rake, alphas])
 
 # apply calibration offset from calibration file
 #df_sync, l_ref = apply_calibration_offset(pickle_path_calibration, df_sync)
