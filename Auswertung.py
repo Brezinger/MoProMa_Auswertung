@@ -214,7 +214,7 @@ def read_airfoil_geometry(filename, c, foil_source, eta_flap, pickle_file=""):
     --> generates pandas DataFrame with assignment of sensor unit + port to measuring point from Excel and renames
     --> adds 's' positions of the measuring points from Excel (line coordinate around the profile,
         starting at trailing edge)
-    --> reads 'Kommentar' column of excel and drops sensors with status 'inop'
+    --> reads 'Kommentar' column of excel a nd drops sensors with status 'inop'
     --> calculates x and y position of static pressure points with airfoil coordinate file
     --> calculates x_n and y_n normal vector, tangential to airfoil surface of static pressure points
         with airfoil coordinate file
@@ -237,7 +237,7 @@ def read_airfoil_geometry(filename, c, foil_source, eta_flap, pickle_file=""):
     if not os.path.exists(pickle_file) or eta_flap_read != eta_flap:
 
         if eta_flap != 0.0:
-            foil.flap(xFlap=0.8, yFlap=0, etaFlap=15)
+            foil.flap(xFlap=0.8, yFlap=0, etaFlap=5)
 
         # Read Excel file
         df = pd.read_excel(filename, usecols="A:F", skiprows=1, skipfooter=1)# Read the Excel file
@@ -344,11 +344,15 @@ def calc_cp(df, prandtl_data, pressure_data_ident_strings):
     return df
 def calc_cl_cm_cdp(df, df_airfoil, at_airfoil, flap_pivots=[], lambda_wall=0., sigma_wall=0., xi_wall=0.):
     """
-    calculates lift coefficient
-    :param df:                  list of pandas DataFrames containing cp values
-    :param df_airfoil:          list of pandas DataFrames containing columns of x_n and y_n normal vectors of measuring points
-                                on airfoil
-    :return:df                  merged dataframe with added cl coefficient column
+
+    :param df:
+    :param df_airfoil:
+    :param at_airfoil:
+    :param flap_pivots:     position of flap hinge; TE: one point, if TE and LE: two points
+    :param lambda_wall:
+    :param sigma_wall:
+    :param xi_wall:
+    :return:
     """
 
     # calculate tap normal vector components on airfoil surface projected to aerodynamic coordinate system
@@ -548,8 +552,6 @@ def plot_specify_section(df, cp):
     :return:
     """
 
-
-
     plt.close('all')
 
     # plot U_CAS over time
@@ -559,15 +561,16 @@ def plot_specify_section(df, cp):
     ax.set_ylabel("$U_{CAS} [m/s]$")
     ax.set_title("$U_{CAS}$ vs. Time")
     ax.xaxis.set_major_formatter(DateFormatter("%H:%M"))
+    ax.grid()
 
     # plot alpha, cl, cm, cmr over time
     fig3, ax3 = plt.subplots()
     ax4 = ax3.twinx()
-    ax4.plot(df.loc[df["U_CAS"] > 25].index, df.loc[df["U_CAS"] > 25, "Alpha"], "y-", label=r"$\alpha$")
-    ax3.plot(df.loc[df["U_CAS"] > 25].index, df.loc[df["U_CAS"] > 25, "cl"], "k-", label="$c_l$")
-    ax3.plot(df.loc[df["U_CAS"] > 25].index, df.loc[df["U_CAS"] > 25, "cm"], "r-", label="$c_{m}$")
-    ax3.plot(df.loc[df["U_CAS"] > 25].index, df.loc[df["U_CAS"] > 25, "cmr_LE"], "g-", label="$c_{m,r,LE}$")
-    ax3.plot(df.loc[df["U_CAS"] > 25].index, df.loc[df["U_CAS"] > 25, "cmr_TE"], "b-", label="$c_{m,r,TE}$")
+    ax4.plot(df.loc[df["U_CAS"] > 15].index, df.loc[df["U_CAS"] > 15, "Alpha"], "y-", label=r"$\alpha$")
+    ax3.plot(df.loc[df["U_CAS"] > 15].index, df.loc[df["U_CAS"] > 15, "cl"], "k-", label="$c_l$")
+    ax3.plot(df.loc[df["U_CAS"] > 15].index, df.loc[df["U_CAS"] > 15, "cm"], "r-", label="$c_{m}$")
+    ax3.plot(df.loc[df["U_CAS"] > 15].index, df.loc[df["U_CAS"] > 15, "cmr_LE"], "g-", label="$c_{m,r,LE}$")
+    ax3.plot(df.loc[df["U_CAS"] > 15].index, df.loc[df["U_CAS"] > 15, "cmr_TE"], "b-", label="$c_{m,r,TE}$")
     ax3.xaxis.set_major_formatter(DateFormatter("%H:%M"))
     ax3.grid()
     fig3.legend()
@@ -576,15 +579,15 @@ def plot_specify_section(df, cp):
     # plot path of car
     fig5, ax5 = plt.subplots()
     ax5.plot(df["Longitude"], df["Latitude"], "k-")
-    ax5.plot(df.loc[df["U_CAS"] > 25, "Longitude"], df.loc[df["U_CAS"] > 25, "Latitude"], "g-")
+    ax5.plot(df.loc[df["U_CAS"] > 5, "Longitude"], df.loc[df["U_CAS"] > 5, "Latitude"], "g-")
     """
 
     # plot c_d, rake position and rake speed over time
     fig6, ax6 = plt.subplots()
     ax7 = ax6.twinx()
-    ax6.plot(df.loc[df["U_CAS"] > 25].index, df.loc[df["U_CAS"] > 25, "cd"], "b-", label="$c_d$")
-    ax7.plot(df.loc[df["U_CAS"] > 25].index, df.loc[df["U_CAS"] > 25, "Rake Position"], "r-", label="rake position")
-    ax7.plot(df.loc[df["U_CAS"] > 25].index, df.loc[df["U_CAS"] > 25, "Rake Speed"], "g-", label="rake speed")
+    ax6.plot(df.loc[df["U_CAS"] > 15].index, df.loc[df["U_CAS"] > 15, "cd"], "b-", label="$c_d$")
+    ax7.plot(df.loc[df["U_CAS"] > 15].index, df.loc[df["U_CAS"] > 15, "Rake Position"], "r-", label="rake position")
+    ax7.plot(df.loc[df["U_CAS"] > 15].index, df.loc[df["U_CAS"] > 15, "Rake Speed"], "g-", label="rake speed")
     ax6.set_xlabel("$Time$")
     ax7.set_xlabel("Rake Position / Speed")
     ax6.set_ylabel("$c_d$")
@@ -599,7 +602,7 @@ def plot_specify_section(df, cp):
     plt.show()
 
     return 1
-def plot_operating_points(df, df_airfoil, at_airfoil, sens_ident_cols, t):
+def plot_operating_points(df, df_airfoil, at_airfoil, sens_ident_cols, t_start, t_end):
     """
     plots cp(x) and wake depression (x) at certain operating points (alpha, Re and beta)
     :param df:      pandas dataframe with index time and data to be plotted
@@ -614,12 +617,18 @@ def plot_operating_points(df, df_airfoil, at_airfoil, sens_ident_cols, t):
     ax_cp = ax.twinx()
     ax.plot(at_airfoil.coords[:, 0], at_airfoil.coords[:, 1], "k-")
     ax.plot(df_airfoil["x"], df_airfoil["y"], "k.")
-    ax_cp.plot(df_airfoil["x"], df[sens_ident_cols].iloc[t], "r.-")
+    ax_cp.plot(df_airfoil["x"], df[sens_ident_cols].iloc[t_start:t_end].mean(), "r.-")
+    # Calculate mean values and standard deviations over the specified time interval
+    mean_cp_values = df[sens_ident_cols].iloc[t_start:t_end].mean()
+    std_cp_values = df[sens_ident_cols].iloc[t_start:t_end].std()
+    # Plot the mean cp values with error bars
+    ax_cp.errorbar(df_airfoil["x"], mean_cp_values, yerr=std_cp_values, fmt='r.-', ecolor='gray', elinewidth=1,capsize=2)
     ylim_u, ylim_l = ax_cp.get_ylim()
     ax_cp.set_ylim([ylim_l, ylim_u])
     ax.set_xlabel("$x$")
     ax.set_ylabel("$y$")
     ax_cp.set_ylabel("$c_p$")
+    ax.set_title("Pressure distribution over airfoil")
     ax_cp.grid()
     ax.axis("equal")
 
@@ -644,7 +653,12 @@ def plot_operating_points(df, df_airfoil, at_airfoil, sens_ident_cols, t):
     fig, ax = plt.subplots()
     ax_cp = ax.twiny()
     ax.plot(at_airfoil.coords[:, 0], -df_airfoil_y_corr, "k-")
-    ax_cp.plot(cols.iloc[t], z_tot, "r.-")
+    ax_cp.plot(cols.iloc[t_start:t_end].mean(), z_tot, "r.-")
+    # Calculate mean and standard deviation over the specified time interval
+    mean_ptot_values = cols.iloc[t_start:t_end].mean()
+    std_ptot_values = cols.iloc[t_start:t_end].std()
+    # Plot the mean ptot values with error bars
+    ax_cp.errorbar(mean_ptot_values, z_tot, xerr=std_ptot_values, fmt='r.-', ecolor='gray', elinewidth=1, capsize=2)
     ylim_u, ylim_l = ax_cp.get_ylim()
     ax_cp.set_ylim([ylim_l, ylim_u])
     ax.set_xlabel("$x$")
@@ -703,7 +717,7 @@ def calc_mean(df, alpha, Re):
     :return:
     """
     # define Intervalls (might be adapted)
-    delta_alpha = 0.2
+    delta_alpha = 0.5
     min_alpha = alpha - delta_alpha
     max_alpha = alpha + delta_alpha
     delta_Re = 0.2e6
@@ -730,7 +744,7 @@ def calc_mean(df, alpha, Re):
     mean_cm = col_cm.mean()
 
     return mean_alpha, mean_cl, mean_cd, mean_cm
-def prepare_polar_df(df, Re, alpha_range=range(1, 18)):
+def prepare_polar_df(df, Re, alpha_range=range(-18, 18)):
     """
     iterates over alpha [1,17] deg and calculates to each alpha the mean values of cl, cd and cm; if alpha and Re
     criteria are not fulfilled, moves on to next alpha value
@@ -745,7 +759,7 @@ def prepare_polar_df(df, Re, alpha_range=range(1, 18)):
     # iterates over alpha and calls calc_mean function
     for alpha in alpha_range:
         mean_alpha, mean_cl, mean_cd, mean_cm = calc_mean(df, alpha, Re)
-        if not pd.isna(mean_cl):  # just added if mean value can be calculated
+        if not pd.isna(mean_cl):  # just added to list if mean value can be calculated
             new_row = pd.DataFrame({"alpha": [alpha], "cl": [mean_cl], "cd": [mean_cd], "cm": [mean_cm]})
             df_polars = pd.concat([df_polars, new_row], ignore_index=True)
 
@@ -756,21 +770,6 @@ def plot_polars(df):
     :param df_polars:
     :return:
     """
-    # just for testing
-    #********************************************************************************
-    data = {
-        'alpha': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17],
-        'cl': [0.01, 0.1, 0.15, 0.19, 0.23, 0.27, 0.28, 0.4, 0.45, 0.49,
-               0.6, 0.7, 0.9, 1.3, 1.4, 1.2, 0.99],
-        'cd': [0.01, 0.1, 0.15, 0.19, 0.23, 0.27, 0.28, 0.4, 0.45, 0.49,
-               0.6, 0.7, 0.9, 1.3, 1.4, 1.2, 0.99],
-        'cm': [0.01, 0.1, 0.15, 0.19, 0.23, 0.27, 0.28, 0.4, 0.45, 0.49,
-               0.6, 0.7, 0.9, 1.3, 1.4, 1.2, 0.99]
-    }
-    df = pd.DataFrame(data)
-    #********************************************************************************
-
-
     # plot cl(alpha)
     fig, ax = plt.subplots()
     ax.plot(df["alpha"], df["cl"], "k.", linestyle='-')
@@ -806,6 +805,53 @@ def plot_polars(df):
     plt.show()
 
     return 1
+def settling_time_average(df):
+    '''
+    visualizes the running average over time in order to analyze if the sweep time is sufficient or not
+    :param df:      df_sync
+    :return:
+    '''
+
+    Re=1e6
+    alpha=-4
+    # define Intervalls (might be adapted)
+    delta_alpha = 0.2
+    min_alpha = alpha - delta_alpha
+    max_alpha = alpha + delta_alpha
+    delta_Re = 0.1e6
+    min_Re = Re - delta_Re
+    max_Re = Re + delta_Re
+
+    # conditions to achieve representative values
+    condition = ((df["Alpha"] > min_alpha) &
+                 (df["Alpha"] < max_alpha) &
+                 (df["Re"] > min_Re) &
+                 (df["Re"] < max_Re) &
+                 (df["Rake Speed"] != 0))
+
+    # pick values which fulfill the condition
+    col_alpha = df.loc[condition, "Alpha"]
+    col_cl = df.loc[condition, "cl"]
+    col_cd = df.loc[condition, "cd"]
+    col_cm = df.loc[condition, "cm"]
+
+    # visualize settling time of average calculation
+    # Create a running average column
+    col_cd['running_avg'] = col_cd.expanding().mean()
+
+    # Plotting the running average
+    plt.figure(figsize=(10, 6))
+    plt.plot(col_cd['running_avg'].index, col_cd['running_avg'], label='Running Average', color='blue')
+    plt.xlabel('Time')
+    plt.ylabel('Running Average of cd')
+    plt.title('Running Average of cd Over Time')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+    return 1
+
+
 
 
 
@@ -815,20 +861,20 @@ if os.getlogin() == 'joeac':
 else:
     WDIR = "D:/Python_Codes/Workingdirectory_Auswertung"
 
-file_path_drive = os.path.join(WDIR, '20230926-1713_drive.dat')
-file_path_AOA = os.path.join(WDIR, '20230926-1713_AOA.dat')
-file_path_pstat_K02 = os.path.join(WDIR, '20230926-1713_static_K02.dat')
-file_path_pstat_K03 = os.path.join(WDIR, '20230926-1713_static_K03.dat')
-file_path_pstat_K04 = os.path.join(WDIR, '20230926-1713_static_K04.dat')
-file_path_ptot_rake = os.path.join(WDIR, '20230926-1713_ptot_rake.dat')
-file_path_pstat_rake = os.path.join(WDIR, '20230926-1713_pstat_rake.dat')
-file_path_GPS = os.path.join(WDIR, '20230926-1713_GPS.dat')
-file_path_airfoil = os.path.join(WDIR, 'Messpunkte Demonstrator.xlsx')
+file_path_drive = os.path.join(WDIR, '20240614-0022_drive.dat')
+file_path_AOA = os.path.join(WDIR, '20240614-0022_AOA.dat')
+file_path_pstat_K02 = os.path.join(WDIR, '20240614-0022_static_K02.dat')
+file_path_pstat_K03 = os.path.join(WDIR, '20240614-0022_static_K03.dat')
+file_path_pstat_K04 = os.path.join(WDIR, '20240614-0022_static_K04.dat')
+file_path_ptot_rake = os.path.join(WDIR, '20240614-0022_ptot_rake.dat')
+file_path_pstat_rake = os.path.join(WDIR, '20240614-0022_pstat_rake.dat')
+file_path_GPS = os.path.join(WDIR, '20240614-0022_GPS.dat')
+file_path_airfoil = os.path.join(WDIR, 'Messpunkte Demonstrator_Mue13-33.xlsx')
 pickle_path_airfoil = os.path.join(WDIR, 'Messpunkte Demonstrator.p')
 pickle_path_calibration = os.path.join(WDIR, '20230926-171332_sensor_calibration_data.p')
-cp_path_wall_correction = os.path.join(WDIR, 'B200-0_reinitialized.cp')
+cp_path_wall_correction = os.path.join(WDIR, 'mue13-33-le15-tgap0_14.cp')
 
-flap_pivots = np.array([[0.325, 0.0], [0.87, -0.004]])
+flap_pivots = np.array([[0.2, 0.0], [0.8, 0.0]]) # LEF and TEF
 
 prandtl_data = {"unit name static": "static_K04", "i_sens_static": 31,
                 "unit name total": "static_K04", "i_sens_total": 32}
@@ -837,14 +883,14 @@ if os.getlogin() == 'joeac':
     foil_coord_path = ("C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Data Brezn/"
                        "01_Aerodynamic Design/01_Airfoil Optimization/B203/0969/B203-0.dat")
 else:
-    foil_coord_path = "D:/Python_Codes/Workingdirectory_Auswertung/B203-0.dat"
+    foil_coord_path = "D:/Python_Codes/Workingdirectory_Auswertung/mue13-33-le15.dat"
 
 os.chdir(WDIR)
 
 
 
 # read airfoil data
-l_ref = 0.5
+l_ref = 0.7
 df_airfoil, airfoil = read_airfoil_geometry(file_path_airfoil, c=l_ref, foil_source=foil_coord_path, eta_flap=0.0,
                                             pickle_file=pickle_path_airfoil)
 
@@ -886,10 +932,14 @@ df_sync = calc_cd(df_sync, l_ref, lambda_wall, sigma_wall, xi_wall)
 # visualisation
 plot_specify_section(df_sync, cp)
 plot_3D(df_sync)
-plot_operating_points(df_sync, df_airfoil, airfoil, sens_ident_cols, t=40000)
+plot_operating_points(df_sync, df_airfoil, airfoil, sens_ident_cols, t_start=60272, t_end=61016) # df_sync.index.get_loc(pd.Timestamp('2024-06-13 23:38:00'))
+
 
 df_polars = prepare_polar_df(df_sync, Re=1e6)
 plot_polars(df_polars)
+
+
+settling_time_average(df_sync)
 
 print("done")
 
