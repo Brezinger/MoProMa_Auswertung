@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 import matplotlib
 from matplotlib.dates import DateFormatter
+import matplotlib.ticker as ticker
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from matplotlib import cm
 import matplotlib.pyplot as plt
@@ -588,7 +589,8 @@ def plot_specify_section(df, cp):
     host.plot(df.loc[df["U_CAS"] > 15].index, df.loc[df["U_CAS"] > 15, "cm"], label="$c_{m}$", zorder=2)
     host.plot(df.loc[df["U_CAS"] > 15].index, df.loc[df["U_CAS"] > 15, "cd"] * 10, label="$c_d \cdot 10$", zorder=1)
     # Formatting the x-axis to show minutes and seconds
-    host.xaxis.set_major_formatter(DateFormatter("%M:%S"))
+    host.xaxis.set_major_formatter(DateFormatter("%M:%S.%f"))
+    #host.xaxis.set_major_formatter(ticker.FormatStrFormatter('%0.1f'))
     # Setting labels
     host.set_xlabel("$Time[mm:ss]$")
     ax3.set_ylabel(r"$\alpha$")
@@ -604,9 +606,6 @@ def plot_specify_section(df, cp):
         labels.extend(label)
     fig3.legend(lines, labels, loc='upper right')
 
-    plt.show()
-
-    print("done")
 
     """
     # plot path of car
@@ -745,19 +744,34 @@ def calc_mean(df, alpha, Re):
     :return:
     """
     # define Intervalls (might be adapted)
-    delta_alpha = 0.5
+    delta_alpha = 0.09
     min_alpha = alpha - delta_alpha
     max_alpha = alpha + delta_alpha
     delta_Re = 0.2e6
     min_Re = Re - delta_Re
     max_Re = Re + delta_Re
 
-    # conditions to be representive values
+    # conditions for representative values
     condition = ((df["Alpha"] > min_alpha) &
                  (df["Alpha"] < max_alpha) &
                  (df["Re"] > min_Re) &
                  (df["Re"] < max_Re))# &
                  #(df["Rake Speed"] != 0))
+
+    """# Convert index to elapsed time in seconds
+    elapsed_time = (df.index - df.index[0]).total_seconds()
+
+    # Create a DataFrame with elapsed time and condition
+    condition_df = pd.DataFrame({'elapsed_time': elapsed_time, 'condition': condition})
+
+    # Rolling window to check if conditions are met for at least 5 seconds
+    rolling_window = condition_df['condition'].rolling('5S', on='elapsed_time').sum()
+
+    # Add a column to indicate if the condition is met for at least 5 seconds
+    condition_df['met_for_5_seconds'] = rolling_window >= 5
+
+    # Filter the original DataFrame based on the new condition
+    df = df[condition_df['met_for_5_seconds']]"""
 
     # pick values which fulfill the condition
     col_alpha = df.loc[condition, "Alpha"]
@@ -772,7 +786,7 @@ def calc_mean(df, alpha, Re):
     mean_cm = col_cm.mean()
 
     return mean_alpha, mean_cl, mean_cd, mean_cm
-def prepare_polar_df(df, Re, alpha_range=range(-18, 18)):
+def prepare_polar_df(df, Re, alpha_range=[x*0.1 for x in range(-180,180,1)]):  #alpha_range=range(-18, 18, 0.2)
     """
     iterates over alpha [1,17] deg and calculates to each alpha the mean values of cl, cd and cm; if alpha and Re
     criteria are not fulfilled, moves on to next alpha value
@@ -915,7 +929,8 @@ df_airfoil, airfoil = read_airfoil_geometry(file_path_airfoil, c=l_ref, foil_sou
 lambda_wall, sigma_wall, xi_wall = calc_wall_correction_coefficients(df_airfoil, cp_path_wall_correction, l_ref)
 
 # iterate over filenames in order to read a polar if data is scattered over several raw data files
-filenames = ['20240614-0022', '20240614-0113']
+filenames = ['20240614-0132']
+print('Current files: ', filenames)
 df_sync=pd.DataFrame()
 list_of_dfs = []
 
@@ -976,15 +991,14 @@ df_sync = calc_cd(df_sync, l_ref, lambda_wall, sigma_wall, xi_wall)
 # visualisation
 plot_specify_section(df_sync, cp)
 #plot_3D(df_sync)
-plot_operating_points(df_sync, df_airfoil, airfoil, sens_ident_cols, t_start=60272, t_end=61016) # df_sync.index.get_loc(pd.Timestamp('2024-06-13 23:38:00'))
+plot_operating_points(df_sync, df_airfoil, airfoil, sens_ident_cols, t_start=28700, t_end=30200) # df_sync.index.get_loc(pd.Timestamp('2024-06-13 23:38:00'))
 
 
-df_polars = prepare_polar_df(df_sync, Re=1e6)
+df_polars = prepare_polar_df(df_sync, Re=1.6e6)
 plot_polars(df_polars)
 
 
 settling_time_average(df_sync)
 
-plt.show()
 print("done")
 
