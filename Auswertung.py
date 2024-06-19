@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 import matplotlib
 from matplotlib.dates import DateFormatter
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 from matplotlib import cm
 import matplotlib.pyplot as plt
 #plt.rcParams['text.usetex'] = True
@@ -573,19 +574,39 @@ def plot_specify_section(df, cp):
     ax.grid()
 
     # plot alpha, cl, cm, cmr over time
-    fig3, ax3 = plt.subplots()
-    ax4 = ax3.twinx()
-    ax4.plot(df.loc[df["U_CAS"] > 15].index, df.loc[df["U_CAS"] > 15, "Alpha"], "k-", label=r"$\alpha$")
-    ax3.plot(df.loc[df["U_CAS"] > 15].index, df.loc[df["U_CAS"] > 15, "cl"], label="$c_l$")
-    ax3.plot(df.loc[df["U_CAS"] > 15].index, df.loc[df["U_CAS"] > 15, "cm"],label="$c_{m}$")
-    #ax3.plot(df.loc[df["U_CAS"] > 15].index, df.loc[df["U_CAS"] > 15, "cmr_LE"], label="$c_{m,r,LE}$")
-    ax3.plot(df.loc[df["U_CAS"] > 15].index, df.loc[df["U_CAS"] > 15, "cmr_TE"], label="$c_{m,r,TE}$")
-    ax3.plot(df.loc[df["U_CAS"] > 15].index, df.loc[df["U_CAS"] > 15, "cd"]*10, label="$c_d \cdot 10$")
-    #ax7.plot(df.loc[df["U_CAS"] > 15].index, df.loc[df["U_CAS"] > 15, "Rake Position"], label="rake position")
-    #ax3.plot(df.loc[df["U_CAS"] > 15].index, df.loc[df["U_CAS"] > 15, "Rake Speed"]*1e-3, label="rake speed$\cdot 10^-3")
-    ax3.xaxis.set_major_formatter(DateFormatter("%M:%S"))
-    ax3.grid()
-    fig3.legend()
+    fig3, host = plt.subplots()
+    # Create twin axes on the right side of the host axis
+    ax3 = host.twinx()
+    ax4 = host.twinx()
+    # Offset the right twin axes so they don't overlap
+    ax3.spines['right'].set_position(('outward', 60))
+    ax4.spines['right'].set_position(('outward', 0))
+    # Set plot lines
+    ax3.plot(df.loc[df["U_CAS"] > 15].index, df.loc[df["U_CAS"] > 15, "Alpha"], "k-", label=r"$\alpha$", zorder=5)
+    ax4.plot(df.loc[df["U_CAS"] > 15].index, df.loc[df["U_CAS"] > 15, "Re"], "y-", label=r"$Re$", zorder=4)
+    host.plot(df.loc[df["U_CAS"] > 15].index, df.loc[df["U_CAS"] > 15, "cl"], label="$c_l$", zorder=3)
+    host.plot(df.loc[df["U_CAS"] > 15].index, df.loc[df["U_CAS"] > 15, "cm"], label="$c_{m}$", zorder=2)
+    host.plot(df.loc[df["U_CAS"] > 15].index, df.loc[df["U_CAS"] > 15, "cd"] * 10, label="$c_d \cdot 10$", zorder=1)
+    # Formatting the x-axis to show minutes and seconds
+    host.xaxis.set_major_formatter(DateFormatter("%M:%S"))
+    # Setting labels
+    host.set_xlabel("$Time[mm:ss]$")
+    ax3.set_ylabel(r"$\alpha$")
+    host.set_ylabel("$c_l, c_d \cdot 10, c_m$")
+    ax4.set_ylabel("$Re$")
+    # Enabling grid on host
+    host.grid()
+    # Adding legends from all axes
+    lines, labels = [], []
+    for ax in [host, ax3, ax4]:
+        line, label = ax.get_legend_handles_labels()
+        lines.extend(line)
+        labels.extend(label)
+    fig3.legend(lines, labels, loc='upper right')
+
+    plt.show()
+
+    print("done")
 
     """
     # plot path of car
@@ -678,6 +699,7 @@ def plot_operating_points(df, df_airfoil, at_airfoil, sens_ident_cols, t_start, 
 
 
     return 1
+
 def plot_3D(df):
     """
 
@@ -867,21 +889,6 @@ if os.getlogin() == 'joeac':
 else:
     WDIR = "D:/Python_Codes/Workingdirectory_Auswertung"
 
-
-
-file_path_drive = os.path.join(WDIR, '20240614-0022_drive.dat')
-file_path_AOA = os.path.join(WDIR, '20240614-0022_AOA.dat')
-file_path_pstat_K02 = os.path.join(WDIR, '20240614-0022_static_K02.dat')
-file_path_pstat_K03 = os.path.join(WDIR, '20240614-0022_static_K03.dat')
-file_path_pstat_K04 = os.path.join(WDIR, '20240614-0022_static_K04.dat')
-file_path_ptot_rake = os.path.join(WDIR, '20240614-0022_ptot_rake.dat')
-file_path_pstat_rake = os.path.join(WDIR, '20240614-0022_pstat_rake.dat')
-file_path_GPS = os.path.join(WDIR, '20240614-0022_GPS.dat')
-file_path_airfoil = os.path.join(WDIR, 'Messpunkte Demonstrator_Mue13-33.xlsx')
-pickle_path_airfoil = os.path.join(WDIR, 'Messpunkte Demonstrator.p')
-pickle_path_calibration = os.path.join(WDIR, '20230926-171332_sensor_calibration_data.p')
-cp_path_wall_correction = os.path.join(WDIR, 'mue13-33-le15-tgap0_14.cp')
-
 flap_pivots = np.array([[0.2, 0.0], [0.8, 0.0]]) # LEF and TEF
 
 prandtl_data = {"unit name static": "static_K04", "i_sens_static": 31,
@@ -895,35 +902,64 @@ else:
 
 os.chdir(WDIR)
 
-
+file_path_airfoil = os.path.join(WDIR, 'Messpunkte Demonstrator_Mue13-33.xlsx')
+pickle_path_airfoil = os.path.join(WDIR, 'Messpunkte Demonstrator.p')
+pickle_path_calibration = os.path.join(WDIR, '20230926-171332_sensor_calibration_data.p')
+cp_path_wall_correction = os.path.join(WDIR, 'mue13-33-le15-tgap0_14.cp')
 
 # read airfoil data
 l_ref = 0.7
 df_airfoil, airfoil = read_airfoil_geometry(file_path_airfoil, c=l_ref, foil_source=foil_coord_path, eta_flap=0.0,
                                             pickle_file=pickle_path_airfoil)
-
 # calculate wall correction coefficients
 lambda_wall, sigma_wall, xi_wall = calc_wall_correction_coefficients(df_airfoil, cp_path_wall_correction, l_ref)
 
-# read sensor data
-GPS = read_GPS(file_path_GPS)
-drive = read_drive(file_path_drive, t0=GPS["Time"].iloc[0])
-alphas = read_AOA_file(file_path_AOA, sigma_wall, t0=GPS["Time"].iloc[0])
-pstat_K02 = read_DLR_pressure_scanner_file(file_path_pstat_K02, n_sens=32, t0=GPS["Time"].iloc[0])
-pstat_K03 = read_DLR_pressure_scanner_file(file_path_pstat_K03, n_sens=32, t0=GPS["Time"].iloc[0])
-pstat_K04 = read_DLR_pressure_scanner_file(file_path_pstat_K04, n_sens=32, t0=GPS["Time"].iloc[0])
-ptot_rake = read_DLR_pressure_scanner_file(file_path_ptot_rake, n_sens=32, t0=GPS["Time"].iloc[0])
-pstat_rake = read_DLR_pressure_scanner_file(file_path_pstat_rake, n_sens=5, t0=GPS["Time"].iloc[0])
+# iterate over filenames in order to read a polar if data is scattered over several raw data files
+filenames = ['20240614-0022', '20240614-0113']
+df_sync=pd.DataFrame()
+list_of_dfs = []
 
-# synchronize sensor data
-df_sync = synchronize_data([pstat_K02, pstat_K03, pstat_K04, ptot_rake, pstat_rake, alphas])
+for filename in filenames:
+    try:
+        file_path_drive = os.path.join(WDIR, f"{filename}_drive.dat")
+        file_path_AOA = os.path.join(WDIR, f"{filename}_AOA.dat")
+        file_path_pstat_K02 = os.path.join(WDIR, f"{filename}_static_K02.dat")
+        file_path_pstat_K03 = os.path.join(WDIR, f"{filename}_static_K03.dat")
+        file_path_pstat_K04 = os.path.join(WDIR, f"{filename}_static_K04.dat")
+        file_path_ptot_rake = os.path.join(WDIR, f"{filename}_ptot_rake.dat")
+        file_path_pstat_rake = os.path.join(WDIR, f"{filename}_pstat_rake.dat")
+        file_path_GPS = os.path.join(WDIR, f"{filename}_GPS.dat")
 
-# apply calibration offset from calibration file
-#df_sync, l_ref = apply_calibration_offset(pickle_path_calibration, df_sync)
+        # read sensor data
+        GPS = read_GPS(file_path_GPS)
+        drive = read_drive(file_path_drive, t0=GPS["Time"].iloc[0])
+        alphas = read_AOA_file(file_path_AOA, sigma_wall, t0=GPS["Time"].iloc[0])
+        pstat_K02 = read_DLR_pressure_scanner_file(file_path_pstat_K02, n_sens=32, t0=GPS["Time"].iloc[0])
+        pstat_K03 = read_DLR_pressure_scanner_file(file_path_pstat_K03, n_sens=32, t0=GPS["Time"].iloc[0])
+        pstat_K04 = read_DLR_pressure_scanner_file(file_path_pstat_K04, n_sens=32, t0=GPS["Time"].iloc[0])
+        ptot_rake = read_DLR_pressure_scanner_file(file_path_ptot_rake, n_sens=32, t0=GPS["Time"].iloc[0])
+        pstat_rake = read_DLR_pressure_scanner_file(file_path_pstat_rake, n_sens=5, t0=GPS["Time"].iloc[0])
 
-# apply calibration offset from first 20 seconds
-T_air = 288
-df_sync = apply_calibration_20sec(df_sync)
+        # synchronize sensor data
+        df_sync = synchronize_data([pstat_K02, pstat_K03, pstat_K04, ptot_rake, pstat_rake, alphas])
+
+        # apply calibration offset from calibration file
+        #df_sync, l_ref = apply_calibration_offset(pickle_path_calibration, df_sync)
+
+        # apply calibration offset from first 20 seconds
+        T_air = 288
+        df_sync = apply_calibration_20sec(df_sync)
+
+        # append the processed data to the all_data DataFrame
+        list_of_dfs.append(df_sync)
+        df_sync = pd.concat(list_of_dfs)
+
+    except FileNotFoundError:
+        print(f"File not found in working directory: {filename}")
+
+
+
+
 
 # calculate wind component
 df_sync = calc_airspeed_wind(df_sync, prandtl_data, T_air, l_ref)
@@ -939,7 +975,7 @@ df_sync = calc_cd(df_sync, l_ref, lambda_wall, sigma_wall, xi_wall)
 
 # visualisation
 plot_specify_section(df_sync, cp)
-plot_3D(df_sync)
+#plot_3D(df_sync)
 plot_operating_points(df_sync, df_airfoil, airfoil, sens_ident_cols, t_start=60272, t_end=61016) # df_sync.index.get_loc(pd.Timestamp('2024-06-13 23:38:00'))
 
 
@@ -949,5 +985,6 @@ plot_polars(df_polars)
 
 settling_time_average(df_sync)
 
+plt.show()
 print("done")
 
