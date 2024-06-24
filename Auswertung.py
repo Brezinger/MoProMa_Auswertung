@@ -18,7 +18,7 @@ import matplotlib.pyplot as plt
 
 from scipy.signal import  savgol_filter
 from scipy import interpolate, integrate, optimize, stats
-#sys.path.append("/put_airfoilwinggeometry_source_here/")
+sys.path.append("C:/git/airfoilwinggeometry")
 from airfoilwinggeometry.AirfoilPackage import AirfoilTools as at
 
 
@@ -947,17 +947,28 @@ if __name__ == '__main__':
 
     # constants and input data
     l_ref = 0.7
+    eta_flap = 0
     T_air = 288
     # set calibration type ("20sec", "manual", "file")
     calibration_type = "file"
     calibration_filename = '20240613-2336_manual_calibration_data.p'
+
+    digitized_LWK_polar_dir = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/Mü13-33/Digitized data Döller LWK/"
+    digitized_LWK_polar_file_clcd = ["Re1e6_cl-cd.txt"]
+    digitized_LWK_polar_file_clalpha = ["Re1e6_cl-alpha.txt"]
+    digitized_LWK_polar_paths = []
+    for i in range(len(digitized_LWK_polar_file_clcd)):
+        digitized_LWK_polar_paths.append([os.path.join(digitized_LWK_polar_dir, digitized_LWK_polar_file_clcd[i]),
+                                          os.path.join(digitized_LWK_polar_dir, digitized_LWK_polar_file_clalpha[i])])
+
 
     # Lower cutoff speed for plots
     U_cutoff = 10
 
     flap_pivots = np.array([[0.2, 0.0], [0.8, 0.0]]) # LEF and TEF
     prandtl_data = {"unit name static": "static_K04", "i_sens_static": 31,
-                    "unit name total": "static_K04", "i_sens_total": 32}
+                    "unit name total": "ptot_rake", "i_sens_total": 3}
+                    #"unit name total": "static_K04", "i_sens_total": 32}
 
     if os.getlogin() == 'joeac':
         ref_dat_path = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/Mü13-33/01_Reference Data/"
@@ -994,7 +1005,7 @@ if __name__ == '__main__':
     df_segments = df_segments[['start', 'end']]
 
     # read airfoil data
-    df_airfoil, airfoil = read_airfoil_geometry(file_path_msr_pts, c=l_ref, foil_source=foil_coord_path, eta_flap=0.0,
+    df_airfoil, airfoil = read_airfoil_geometry(file_path_msr_pts, c=l_ref, foil_source=foil_coord_path, eta_flap=eta_flap,
                                                 pickle_file=pickle_path_msr_pts)
     # calculate wall correction coefficients
     lambda_wall, sigma_wall, xi_wall = calc_wall_correction_coefficients(df_airfoil, cp_path_wall_correction, l_ref)
@@ -1062,9 +1073,49 @@ if __name__ == '__main__':
     plot_operating_points(df_sync, df_airfoil, airfoil, sens_ident_cols, t_start=87533, t_end=87633) # df_sync.index.get_loc(pd.Timestamp('2024-06-13 23:38:00'))
 
 
-    df_polars = prepare_polar_df(df_sync, df_segments)
-    plot_polars(df_polars)
+    df_polar = prepare_polar_df(df_sync, df_segments)
 
+    # Generate PolarTool polar
+    Re_mean = np.around(df_polar.loc[:25, "Re"].mean() / 1e5)*1e5
+    polar = at.PolarTool(name="Mü 13-33", Re=Re_mean, flapangle=eta_flap, WindtunnelName="MoProMa-Car")
+    polar.parseMoProMa_Polar(df_polar)
+
+    # read measured polar from LWK Stuttgart, digitized with getData graph digitizer
+
+    polarsStu = list()
+    for path_clcd, path_clalpha in digitized_LWK_polar_paths:
+        polarsStu.append(at.PolarTool(name="LWK Stuttgart", Re=Re_mean, flapangle=eta_flap))
+        polarsStu[-1].read_getDataGraphDigitizerPolar(path_clcd, path_clalpha)
+
+    PPAX = dict()
+    PPAX['CLmin'] = 0.0
+    PPAX['CLmax'] = 1.5000
+    PPAX['CLdel'] = 0.5000
+    PPAX['CDmin'] = 0.0000
+    PPAX['CDmax'] = 0.0200
+    PPAX['CDdel'] = 0.0050
+    PPAX['ALmin'] = -2.0000
+    PPAX['ALmax'] = 17.0000
+    PPAX['ALdel'] = 2.0000
+    PPAX['CMmin'] = -0.2500
+    PPAX['CMmax'] = 0.000
+    PPAX['CMdel'] = 0.0500
+
+    LineAppearance = dict()
+    LineAppearance['color'] = list()
+    LineAppearance['linestyle'] = list()
+    LineAppearance['marker'] = list()
+
+    LineAppearance['color'].append('r')
+    LineAppearance['color'].append('k')
+
+    LineAppearance['linestyle'].append("None")
+    LineAppearance['linestyle'].append("-")
+
+    LineAppearance['marker'].append("^")
+    LineAppearance['marker'].append("s")
+
+    polar.plotPolar(additionalPolars=polarsStu, PPAX=PPAX, Colorplot=True, LineAppearance=LineAppearance)
 
     settling_time_average(df_sync)
 
