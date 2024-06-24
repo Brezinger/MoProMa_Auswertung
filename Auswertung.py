@@ -9,21 +9,14 @@ import os
 import pickle
 import numpy as np
 import pandas as pd
-import math
-from itertools import chain
 from datetime import datetime, timedelta
+import tzlocal
 
-import matplotlib.pyplot as plt
-import matplotlib
 from matplotlib.dates import DateFormatter
-import matplotlib.ticker as ticker
-from mpl_toolkits.axes_grid1 import make_axes_locatable
-from matplotlib import cm
 import matplotlib.pyplot as plt
 #plt.rcParams['text.usetex'] = True
-from mpl_toolkits.mplot3d import Axes3D
 
-from scipy.integrate import simps
+from scipy.signal import  savgol_filter
 from scipy import interpolate, integrate, optimize, stats
 #sys.path.append("/put_airfoilwinggeometry_source_here/")
 from airfoilwinggeometry.AirfoilPackage import AirfoilTools as at
@@ -47,12 +40,12 @@ def read_AOA_file(filename, sigma_wall, t0):
     abs_sensor_pos_deg = - df['Position'] / 2**14 * 360 - df['Turn'] * 360 + 214.73876953125
     # Compute the gear ratio and alpha
     gear_ratio = 60 / (306 * 2)
-    df['Alpha'] = abs_sensor_pos_deg * gear_ratio
+    df['alpha'] = abs_sensor_pos_deg * gear_ratio
 
     # Combine Date and Time into a single pandas datetime column
     df['Time'] = pd.to_datetime(df['Date'] + ' ' + df['Time'])
     # Select only the relevant columns
-    df = df[['Time', 'Alpha']]
+    df = df[['Time', 'alpha']]
 
     # Convert start time to milliseconds since it is easier to handle arithmetic operations
     start_time_ms = t0.timestamp() * 1000
@@ -64,7 +57,7 @@ def read_AOA_file(filename, sigma_wall, t0):
     df['Time'] = pd.to_datetime(pd.Timestamp(start_time_ms, unit='ms') + time_diff_ms, unit='ms')
 
     # apply wind tunnel wall corrections
-    df.loc[:, "Alpha"] = df["Alpha"] * (1 + sigma_wall)
+    df.loc[:, "alpha"] = df["alpha"] * (1 + sigma_wall)
 
     return df
 def read_GPS(filename):
@@ -77,6 +70,8 @@ def read_GPS(filename):
 
     # Drop rows with any None values (if any invalid GPRMC sentences)
     df_parsed = df_parsed.dropna()
+
+    df_parsed["Time"] = df_parsed["Time"].dt.tz_localize('UTC')
 
     return df_parsed
 def parse_gprmc_row(row):
@@ -174,6 +169,18 @@ def read_DLR_pressure_scanner_file(filename, n_sens, t0):
     # drop timedelta column
     df = df.iloc[:, :-1]
 
+    # drop outliers (all pressures greater than 115% of the median value and lower than 85 % of the median value)
+    # Define the criteria for outliers
+    lower_threshold = 0.85
+    upper_threshold = 1.07
+
+    # Iterate through each column to identify and filter out outliers
+    for column in df.columns[1:]:
+        median_value = df[column].median()
+        lower_bound = lower_threshold * median_value
+        upper_bound = upper_threshold * median_value
+        df = df[(df[column] >= lower_bound) & (df[column] <= upper_bound)]
+
     # assign column names
     df.columns = columns
 
@@ -217,6 +224,9 @@ def synchronize_data(merge_dfs_list):
 
     # Interpolate missing values using time-based interpolation
     merged_df = merged_df.interpolate(method='time')
+
+    # localize index of df_sync to UTC
+    merged_df.index = merged_df.index.tz_localize("UTC")
 
     return merged_df
 def read_airfoil_geometry(filename, c, foil_source, eta_flap, pickle_file=""):
@@ -367,10 +377,10 @@ def calc_cl_cm_cdp(df, df_airfoil, at_airfoil, flap_pivots=[], lambda_wall=0., s
     """
 
     # calculate tap normal vector components on airfoil surface projected to aerodynamic coordinate system
-    n_proj_z = np.dot(df_airfoil[['x_n', 'y_n']].to_numpy(), np.array([-np.sin(np.deg2rad(df['Alpha'])),
-                                             np.cos(np.deg2rad(df['Alpha']))])).T
-    n_proj_x = np.dot(df_airfoil[['x_n', 'y_n']].to_numpy(), np.array([np.cos(np.deg2rad(df['Alpha'])),
-                                             np.sin(np.deg2rad(df['Alpha']))])).T
+    n_proj_z = np.dot(df_airfoil[['x_n', 'y_n']].to_numpy(), np.array([-np.sin(np.deg2rad(df['alpha'])),
+                                             np.cos(np.deg2rad(df['alpha']))])).T
+    n_proj_x = np.dot(df_airfoil[['x_n', 'y_n']].to_numpy(), np.array([np.cos(np.deg2rad(df['alpha'])),
+                                             np.sin(np.deg2rad(df['alpha']))])).T
 
     # assign tap index to sensor unit and sensor port
     sens_ident_cols = ["static_K0{0:d}_{1:d}".format(df_airfoil.loc[i, "Sensor unit K"],
@@ -467,7 +477,6 @@ def calc_cd(df, l_ref, lambda_wall, sigma_wall, xi_wall):
     df["cd"] = cd
 
     return df
-
 def apply_calibration_offset(filename, df):
 
     with open(filename, "rb") as file:
@@ -489,7 +498,7 @@ def apply_calibration_offset(filename, df):
     df = df - df_calibr_pressures
 
     return df, l_ref
-def apply_calibration_20sec(df):
+def apply_calibration_20sec(df, calibration_output_filename="manual_calibration_data.p"):
     """
     uses first 20 seconds to calculate pressure sensor calibration offsets
     :param df:
@@ -510,6 +519,23 @@ def apply_calibration_20sec(df):
 
     # Apply the calibration to the entire DataFrame
     df.iloc[:, :len(df.columns)-6] = df.iloc[:, :len(df.columns)-6] - offsets
+
+    with open(calibration_output_filename, "wb") as file:
+        pickle.dump(offsets, file)
+
+    return df
+def apply_manual_calibration(df, calibration_filename="manual_calibration_data.p"):
+    """
+    uses first 20 seconds to calculate pressure sensor calibration offsets
+    :param df:
+    :return:
+    """
+
+    with open(calibration_filename, "rb") as file:
+        offsets = pickle.load(file)
+
+    # Apply the calibration to the entire DataFrame
+    df.iloc[:, :len(df.columns) - 6] = df.iloc[:, :len(df.columns) - 6] - offsets
 
     return df
 def calc_wall_correction_coefficients(df_airfoil, filepath, l_ref):
@@ -556,14 +582,14 @@ def calc_wall_correction_coefficients(df_airfoil, filepath, l_ref):
     xi_wall_corr = -0.00335 * l_ref**2
 
     return lambda_wall_corr, sigma_wall_corr, xi_wall_corr
-def plot_specify_section(df, cp):
+def plot_specify_section(df, U_cutoff=15):
     """
 
     :param df_sync:
     :return:
     """
 
-    plt.close('all')
+
 
     # plot U_CAS over time
     fig, ax, = plt.subplots()
@@ -579,28 +605,44 @@ def plot_specify_section(df, cp):
     # Create twin axes on the right side of the host axis
     ax3 = host.twinx()
     ax4 = host.twinx()
+    ax5 = host.twinx()
     # Offset the right twin axes so they don't overlap
-    ax3.spines['right'].set_position(('outward', 60))
-    ax4.spines['right'].set_position(('outward', 0))
+    ax3.spines['right'].set_position(('outward', 120))
+    ax4.spines['right'].set_position(('outward', 60))
+    ax5.spines['right'].set_position(('outward', 0))
+
+    # filter data
+    window = 201
+    polyorder = 2
+    cl_filt = savgol_filter(df.loc[df["U_CAS"] > U_cutoff, "cl"], window, polyorder)
+    Re_filt = savgol_filter(df["Re"], window, polyorder)
+    cd_filt = savgol_filter(df.loc[df["U_CAS"] > U_cutoff, "cd"], window, polyorder)
+
     # Set plot lines
-    ax3.plot(df.loc[df["U_CAS"] > 15].index, df.loc[df["U_CAS"] > 15, "Alpha"], "k-", label=r"$\alpha$", zorder=5)
-    ax4.plot(df.loc[df["U_CAS"] > 15].index, df.loc[df["U_CAS"] > 15, "Re"], "y-", label=r"$Re$", zorder=4)
-    host.plot(df.loc[df["U_CAS"] > 15].index, df.loc[df["U_CAS"] > 15, "cl"], label="$c_l$", zorder=3)
-    host.plot(df.loc[df["U_CAS"] > 15].index, df.loc[df["U_CAS"] > 15, "cm"], label="$c_{m}$", zorder=2)
-    host.plot(df.loc[df["U_CAS"] > 15].index, df.loc[df["U_CAS"] > 15, "cd"] * 10, label="$c_d \cdot 10$", zorder=1)
+    ax3.plot(df.loc[df["U_CAS"] > U_cutoff].index, df.loc[df["U_CAS"] > U_cutoff, "alpha"], "k-", label=r"$\alpha$", zorder=5)
+    line = ax4.plot(df.index, df["Re"], "y-", label=r"$Re$", zorder=4, alpha=0.35)
+    ax4.plot(df.index, Re_filt, color=line[0].get_color())
+    line = host.plot(df.loc[df["U_CAS"] > U_cutoff].index, df.loc[df["U_CAS"] > U_cutoff, "cl"], label="$c_l$", zorder=3, alpha=0.35)
+    host.plot(df.loc[df["U_CAS"] > U_cutoff].index, cl_filt, color=line[0].get_color())
+    #host.plot(df.loc[df["U_CAS"] > U_cutoff].index, df.loc[df["U_CAS"] > U_cutoff, "cm"], label="$c_{m}$", zorder=2, alpha=0.35)
+    line = ax5.plot(df.loc[df["U_CAS"] > U_cutoff].index, df.loc[df["U_CAS"] > U_cutoff, "cd"], color="red", label="$c_d$", zorder=1, alpha=0.35)
+    ax5.plot(df.loc[df["U_CAS"] > U_cutoff].index, cd_filt, color=line[0].get_color())
+    ax5.set_ylim([0., cd_filt.max()])
+
     # Formatting the x-axis to show minutes and seconds
     host.xaxis.set_major_formatter(DateFormatter("%M:%S"))
     #host.xaxis.set_major_formatter(ticker.FormatStrFormatter('%0.1f'))
     # Setting labels
     host.set_xlabel("$Time[mm:ss]$")
     ax3.set_ylabel(r"$\alpha$")
-    host.set_ylabel("$c_l, c_d \cdot 10, c_m$")
+    host.set_ylabel("$c_l$")
     ax4.set_ylabel("$Re$")
+    ax5.set_ylabel("$c_d$")
     # Enabling grid on host
     host.grid()
     # Adding legends from all axes
     lines, labels = [], []
-    for ax in [host, ax3, ax4]:
+    for ax in [host, ax3, ax4, ax5]:
         line, label = ax.get_legend_handles_labels()
         lines.extend(line)
         labels.extend(label)
@@ -700,7 +742,6 @@ def plot_operating_points(df, df_airfoil, at_airfoil, sens_ident_cols, t_start, 
 
 
     return 1
-
 def plot_3D(df):
     """
 
@@ -736,7 +777,6 @@ def plot_3D(df):
 
 
     return 1
-
 def calc_mean(df, alpha, Re):
 
     """calculates mean values of AOA, lift-, drag- and moment coefficients for a given alpha (automativally given from
@@ -755,8 +795,8 @@ def calc_mean(df, alpha, Re):
     max_Re = Re + delta_Re
 
     # conditions for representative values
-    condition = ((df["Alpha"] > min_alpha) &
-                 (df["Alpha"] < max_alpha) &
+    condition = ((df["alpha"] > min_alpha) &
+                 (df["alpha"] < max_alpha) &
                  (df["Re"] > min_Re) &
                  (df["Re"] < max_Re))# &
                  #(df["Rake Speed"] != 0))
@@ -764,7 +804,7 @@ def calc_mean(df, alpha, Re):
 
 
     # pick values which fulfill the condition
-    col_alpha = df.loc[condition, "Alpha"]
+    col_alpha = df.loc[condition, "alpha"]
     col_cl = df.loc[condition, "cl"]
     col_cd = df.loc[condition, "cd"]
     col_cm = df.loc[condition, "cm"]
@@ -776,82 +816,32 @@ def calc_mean(df, alpha, Re):
     mean_cm = col_cm.mean()
 
     return mean_alpha, mean_cl, mean_cd, mean_cm
-
-
-
-"""def calc_mean(df, alpha, Re):
-    
-    calculates mean values of AOA, lift-, drag- and moment coefficients for a given alpha (automatically given from
-    calc_means when called) and an entered Reynoldsnumber
-    :param df:          pandas dataframe with column names: alpha, cl, cd, cm (given from plot polars function)
-                        The index of the dataframe should be a pandas timestamp.
-    :param alpha:       automatically given from calc_means when called
-    :param Re:          desired Reynoldsnumber for the test (needs to be typed in function call)
-    :return:            mean values of Alpha, cl, cd, and cm
-    
-    import pandas as pd
-
-    # define intervals (might be adapted)
-    delta_alpha = 0.09
-    min_alpha = alpha - delta_alpha
-    max_alpha = alpha + delta_alpha
-    delta_Re = 0.2e6
-    min_Re = Re - delta_Re
-    max_Re = Re + delta_Re
-
-    # conditions for representative values
-    condition = ((df["Alpha"] > min_alpha) &
-                 (df["Alpha"] < max_alpha) &
-                 (df["Re"] > min_Re) &
-                 (df["Re"] < max_Re))
-
-    # Filter dataframe based on the conditions
-    filtered_df = df[condition]
-
-    # Check for continuous intervals of at least 3 seconds where the condition is met for 97% of the time
-    filtered_df['Time_Diff'] = filtered_df.index.to_series().diff().dt.total_seconds().fillna(0)
-
-    # Group by intervals where the condition is true
-    grouped = filtered_df.groupby((filtered_df['Time_Diff'] > 1).cumsum())
-
-    valid_intervals = []
-    for _, group in grouped:
-        total_duration = (group.index[-1] - group.index[0]).total_seconds()
-        if total_duration >= 3 and len(group) / total_duration >= 0.97:
-            valid_intervals.append(group)
-
-    # Concatenate valid intervals
-    if valid_intervals:
-        valid_data = pd.concat(valid_intervals)
-
-        # Calculate mean values
-        mean_alpha = valid_data['Alpha'].mean()
-        mean_cl = valid_data['cl'].mean()
-        mean_cd = valid_data['cd'].mean()
-        mean_cm = valid_data['cm'].mean()
-
-        return mean_alpha, mean_cl, mean_cd, mean_cm
-        """
-def prepare_polar_df(df, Re, alpha_range=[x*1 for x in range(-18,18,1)]):  #alpha_range=range(-18, 18, 0.2)
+def prepare_polar_df(df_sync, df_segments):
     """
     iterates over alpha [1,17] deg and calculates to each alpha the mean values of cl, cd and cm; if alpha and Re
     criteria are not fulfilled, moves on to next alpha value
-    :param df:                  pandas dataframe with all data to be plotted
+    :param df_sync:                  pandas dataframe with all data to be plotted
     :param alpha_range:         AOA interval for polar
     :param Re:                  desired Reynoldsnumber for polar
     :return: df_polars            df with polar values ready to be plotted
     """
     # create a new dataframe with specified column names
-    df_polars = pd.DataFrame(columns=["alpha", "cl", "cd", "cm"])
+    cols = ["alpha", "Re", "U_CAS", "U_TAS", "cl", "cd", "cdp", "cm", "cmr_LE", "cmr_TE"]
+    data = []
+    for i in range(len(df_segments.index)):
+        start_time = df_segments.loc[i, "start"]
+        end_time = df_segments.loc[i, "end"]
+        df_seg = df_sync.loc[(df_sync.index >= start_time) & (df_sync.index <= end_time), :]
+        data_row = []
+        for col in cols:
+            data_row.append(df_seg[col].mean())
+            data_row.append(df_seg[col].std())
+        data.append(data_row)
 
-    # iterates over alpha and calls calc_mean function
-    for alpha in alpha_range:
-        mean_alpha, mean_cl, mean_cd, mean_cm = calc_mean(df, alpha, Re)
-        if not pd.isna(mean_cl):  # just added to list if mean value can be calculated
-            new_row = pd.DataFrame({"alpha": [alpha], "cl": [mean_cl], "cd": [mean_cd], "cm": [mean_cm]})
-            df_polars = pd.concat([df_polars, new_row], ignore_index=True)
+    cols = np.array([[col, col+"_std"] for col in cols]).flatten()
+    df_polar = pd.DataFrame(data, columns=cols)
 
-    return df_polars
+    return df_polar
 def plot_polars(df):
     """
 
@@ -861,7 +851,7 @@ def plot_polars(df):
     # plot cl(alpha)
     fig, ax = plt.subplots()
     ax.plot(df["alpha"], df["cl"], "k.", linestyle='-')
-    ax.set_xlabel("$alpha$")
+    ax.set_xlabel(r"$\alpha$")
     ax.set_ylabel("$c_l$")
     ax.set_title("$c_l$ vs. alpha")
     ax.grid()
@@ -885,7 +875,7 @@ def plot_polars(df):
     # plot cm(alpha)
     fig4, ax4 = plt.subplots()
     ax4.plot(df["alpha"], df["cm"], "k.", linestyle='-')
-    ax4.set_xlabel("$alpha$")
+    ax4.set_xlabel(r"$\alpha$")
     ax4.set_ylabel("$c_m$")
     ax4.set_title("$c_m$ vs. alpha")
     ax4.grid()
@@ -911,14 +901,14 @@ def settling_time_average(df):
     max_Re = Re + delta_Re
 
     # conditions to achieve representative values
-    condition = ((df["Alpha"] > min_alpha) &
-                 (df["Alpha"] < max_alpha) &
+    condition = ((df["alpha"] > min_alpha) &
+                 (df["alpha"] < max_alpha) &
                  (df["Re"] > min_Re) &
                  (df["Re"] < max_Re))# &
                  #(df["Rake Speed"] != 0))
 
     # pick values which fulfill the condition
-    col_alpha = df.loc[condition, "Alpha"]
+    col_alpha = df.loc[condition, "alpha"]
     col_cl = df.loc[condition, "cl"]
     col_cd = df.loc[condition, "cd"]
     col_cm = df.loc[condition, "cm"]
@@ -940,54 +930,79 @@ def settling_time_average(df):
     return 1
 
 
+if __name__ == '__main__':
+
+    #******************************************************************************************************************
+    #******************************************************************************************************************
+    # Raw data file prefix
+    seg_def_file = "T007.xlsx"
+    #******************************************************************************************************************
+    #******************************************************************************************************************
+
+    if os.getlogin() == 'joeac':
+        WDIR = "C:/WDIR/MoProMa_Auswertung/Mü13-33/2024-06-13/T002_T009/"
+        segments_def_dir = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/Mü13-33/testsegments_specification"
+    else:
+        WDIR = "D:/Python_Codes/Workingdirectory_Auswertung"
+
+    # constants and input data
+    l_ref = 0.7
+    T_air = 288
+    # set calibration type ("20sec", "manual", "file")
+    calibration_type = "file"
+    calibration_filename = '20240613-2336_manual_calibration_data.p'
+
+    # Lower cutoff speed for plots
+    U_cutoff = 10
+
+    flap_pivots = np.array([[0.2, 0.0], [0.8, 0.0]]) # LEF and TEF
+    prandtl_data = {"unit name static": "static_K04", "i_sens_static": 31,
+                    "unit name total": "static_K04", "i_sens_total": 32}
+
+    if os.getlogin() == 'joeac':
+        ref_dat_path = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/Mü13-33/01_Reference Data/"
+    else:
+        ref_dat_path = "D:/Python_Codes/Workingdirectory_Auswertung/"
+
+    os.chdir(WDIR)
+
+    foil_coord_path = os.path.join(ref_dat_path, "mue13-33-le15.dat")
+    file_path_msr_pts = os.path.join(ref_dat_path, 'Messpunkte Demonstrator_Mue13-33.xlsx')
+    pickle_path_msr_pts = os.path.join(ref_dat_path, 'Messpunkte Demonstrator.p')
+    cp_path_wall_correction = os.path.join(ref_dat_path, 'mue13-33-le15-tgap0_14.cp')
+
+    # get segments filenames
+    segments_def_path = os.path.join(segments_def_dir, seg_def_file)
 
 
+    # read raw data filenames
+    raw_data_filenames = pd.read_excel(segments_def_path, skiprows=0, usecols="J").dropna().values.astype("str").flatten()
+    # read segment times
+    df_segments = pd.read_excel(segments_def_path, skiprows=1, usecols="A:H").fillna(method='ffill', axis=0)
+    local_timezone = tzlocal.get_localzone_name()
+    df_segments['start'] = pd.to_datetime(df_segments['dd'].astype(str) + ' ' +
+                                          df_segments['hh'].astype(str) + ':' +
+                                          df_segments['mm'].astype(str) + ':' +
+                                          df_segments['ss'].astype(str),
+                                          errors='coerce', utc=False).dt.tz_localize(local_timezone, ambiguous='NaT', nonexistent='shift_forward')
+    df_segments['end'] = pd.to_datetime(df_segments['dd.1'].astype(str) + ' ' +
+                                        df_segments['hh.1'].astype(str) + ':' +
+                                        df_segments['mm.1'].astype(str) + ':' +
+                                        df_segments['ss.1'].astype(str),
+                                        errors='coerce', utc=False).dt.tz_localize(local_timezone, ambiguous='NaT', nonexistent='shift_forward')
 
+    df_segments = df_segments[['start', 'end']]
 
-if os.getlogin() == 'joeac':
-    WDIR = "C:/WDIR/MoProMa_Auswertung/"
-else:
-    WDIR = "D:/Python_Codes/Workingdirectory_Auswertung"
+    # read airfoil data
+    df_airfoil, airfoil = read_airfoil_geometry(file_path_msr_pts, c=l_ref, foil_source=foil_coord_path, eta_flap=0.0,
+                                                pickle_file=pickle_path_msr_pts)
+    # calculate wall correction coefficients
+    lambda_wall, sigma_wall, xi_wall = calc_wall_correction_coefficients(df_airfoil, cp_path_wall_correction, l_ref)
 
-# constants and input data
-T_air = 288
-flap_pivots = np.array([[0.2, 0.0], [0.8, 0.0]]) # LEF and TEF
-prandtl_data = {"unit name static": "static_K04", "i_sens_static": 31,
-                "unit name total": "static_K04", "i_sens_total": 32}
+    df_sync=pd.DataFrame()
+    list_of_dfs = []
 
-if os.getlogin() == 'joeac':
-    foil_coord_path = ("C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Data Brezn/"
-                       "01_Aerodynamic Design/01_Airfoil Optimization/B203/0969/B203-0.dat")
-else:
-    foil_coord_path = "D:/Python_Codes/Workingdirectory_Auswertung/mue13-33-le15.dat"
-
-os.chdir(WDIR)
-
-file_path_airfoil = os.path.join(WDIR, 'Messpunkte Demonstrator_Mue13-33.xlsx')
-pickle_path_airfoil = os.path.join(WDIR, 'Messpunkte Demonstrator.p')
-cp_path_wall_correction = os.path.join(WDIR, 'mue13-33-le15-tgap0_14.cp')
-
-# read airfoil data
-l_ref = 0.7
-df_airfoil, airfoil = read_airfoil_geometry(file_path_airfoil, c=l_ref, foil_source=foil_coord_path, eta_flap=0.0,
-                                            pickle_file=pickle_path_airfoil)
-# calculate wall correction coefficients
-lambda_wall, sigma_wall, xi_wall = calc_wall_correction_coefficients(df_airfoil, cp_path_wall_correction, l_ref)
-
-# iterate over filenames in order to read a polar if data is scattered over several raw data files
-
-#******************************************************************************************************************
-#******************************************************************************************************************
-filenames = ['20240614-0132']
-#******************************************************************************************************************
-#******************************************************************************************************************
-
-print('Current files: ', filenames)
-df_sync=pd.DataFrame()
-list_of_dfs = []
-
-for filename in filenames:
-    try:
+    for filename in raw_data_filenames:
         file_path_drive = os.path.join(WDIR, f"{filename}_drive.dat")
         file_path_AOA = os.path.join(WDIR, f"{filename}_AOA.dat")
         file_path_pstat_K02 = os.path.join(WDIR, f"{filename}_static_K02.dat")
@@ -996,7 +1011,7 @@ for filename in filenames:
         file_path_ptot_rake = os.path.join(WDIR, f"{filename}_ptot_rake.dat")
         file_path_pstat_rake = os.path.join(WDIR, f"{filename}_pstat_rake.dat")
         file_path_GPS = os.path.join(WDIR, f"{filename}_GPS.dat")
-        pickle_path_calibration = os.path.join(WDIR, f"{filenames}_sensor_calibration_data.p")
+        pickle_path_calibration = os.path.join(WDIR, f"{filename}_sensor_calibration_data.p")
 
         # read sensor data
         GPS = read_GPS(file_path_GPS)
@@ -1011,45 +1026,47 @@ for filename in filenames:
         # synchronize sensor data
         df_sync = synchronize_data([pstat_K02, pstat_K03, pstat_K04, ptot_rake, pstat_rake, alphas])
 
-        # apply calibration offset from calibration file
-        #df_sync, l_ref = apply_calibration_offset(pickle_path_calibration, df_sync)
 
-        # apply calibration offset from first 20 seconds
-        df_sync = apply_calibration_20sec(df_sync)
+        if calibration_type == "file":
+            # apply calibration offset from calibration file
+            df_sync, l_ref = apply_calibration_offset(pickle_path_calibration, df_sync)
+        elif calibration_type == "20sec":
+            # apply calibration offset from first 20 seconds
+            df_sync = apply_calibration_20sec(df_sync)
+        elif calibration_type == "manual":
+            df_sync = apply_manual_calibration(df_sync, calibration_filename)
+        else:
+            raise ValueError("wrong parameter 'calibration_type' passed. Either 'file', '20sec' or 'manual'")
 
         # append the processed data to the all_data DataFrame
         list_of_dfs.append(df_sync)
+
+    if len(raw_data_filenames) > 1:
         df_sync = pd.concat(list_of_dfs)
-    except FileNotFoundError:
-        print(f"File not found in working directory: {filename}")
+
+    # calculate wind component
+    df_sync = calc_airspeed_wind(df_sync, prandtl_data, T_air, l_ref)
+
+    # calculate pressure coefficients
+    df_sync = calc_cp(df_sync, prandtl_data, pressure_data_ident_strings=['stat', 'ptot'])
+
+    # calculate lift coefficients
+    df_sync, sens_ident_cols, cp = calc_cl_cm_cdp(df_sync, df_airfoil, airfoil, flap_pivots, lambda_wall, sigma_wall, xi_wall)
+
+    # calculate drag coefficients
+    df_sync = calc_cd(df_sync, l_ref, lambda_wall, sigma_wall, xi_wall)
+
+    # visualisation
+    plot_specify_section(df_sync, U_cutoff)
+    #plot_3D(df_sync)
+    plot_operating_points(df_sync, df_airfoil, airfoil, sens_ident_cols, t_start=87533, t_end=87633) # df_sync.index.get_loc(pd.Timestamp('2024-06-13 23:38:00'))
 
 
+    df_polars = prepare_polar_df(df_sync, df_segments)
+    plot_polars(df_polars)
 
 
+    settling_time_average(df_sync)
 
-# calculate wind component
-df_sync = calc_airspeed_wind(df_sync, prandtl_data, T_air, l_ref)
-
-# calculate pressure coefficients
-df_sync = calc_cp(df_sync, prandtl_data, pressure_data_ident_strings=['stat', 'ptot'])
-
-# calculate lift coefficients
-df_sync, sens_ident_cols, cp = calc_cl_cm_cdp(df_sync, df_airfoil, airfoil, flap_pivots, lambda_wall, sigma_wall, xi_wall)
-
-# calculate drag coefficients
-df_sync = calc_cd(df_sync, l_ref, lambda_wall, sigma_wall, xi_wall)
-
-# visualisation
-plot_specify_section(df_sync, cp)
-#plot_3D(df_sync)
-plot_operating_points(df_sync, df_airfoil, airfoil, sens_ident_cols, t_start=87533, t_end=87633) # df_sync.index.get_loc(pd.Timestamp('2024-06-13 23:38:00'))
-
-
-df_polars = prepare_polar_df(df_sync, Re=1e5)
-plot_polars(df_polars)
-
-
-settling_time_average(df_sync)
-
-print("done")
+    print("done")
 
