@@ -585,7 +585,7 @@ def calc_wall_correction_coefficients(df_airfoil, filepath, l_ref):
     xi_wall_corr = -0.00335 * l_ref**2
 
     return lambda_wall_corr, sigma_wall_corr, xi_wall_corr
-def plot_specify_section(df, U_cutoff=15):
+def plot_specify_section(df, df_segments, U_cutoff=15):
     """
 
     :param df_sync:
@@ -602,6 +602,8 @@ def plot_specify_section(df, U_cutoff=15):
     ax.set_title("$U_{CAS}$ vs. Time")
     ax.xaxis.set_major_formatter(DateFormatter("%M:%S"))
     ax.grid()
+    for index, row in df_segments.iterrows():
+        ax.axvspan(row['start'], row['end'], color='lightgray', alpha=0.5)
 
     # plot alpha, cl, cm, cmr over time
     fig3, host = plt.subplots()
@@ -631,6 +633,8 @@ def plot_specify_section(df, U_cutoff=15):
     line = ax5.plot(df.loc[df["U_CAS"] > U_cutoff].index, df.loc[df["U_CAS"] > U_cutoff, "cd"], color="red", label="$c_d$", zorder=1, alpha=0.35)
     ax5.plot(df.loc[df["U_CAS"] > U_cutoff].index, cd_filt, color=line[0].get_color())
     ax5.set_ylim([0., cd_filt.max()])
+    for index, row in df_segments.iterrows():
+        host.axvspan(row['start'], row['end'], color='lightgray', alpha=0.5)
 
     # Formatting the x-axis to show minutes and seconds
     host.xaxis.set_major_formatter(DateFormatter("%M:%S"))
@@ -938,196 +942,217 @@ if __name__ == '__main__':
     # constants and input data
     l_ref = 0.7
     T_air = 288
+    # Lower cutoff speed for plots
+    U_cutoff = 10
     #******************************************************************************************************************
     #******************************************************************************************************************
 
     eta_flap = 0
     # Raw data file prefix
-    seg_def_file = "T007.xlsx"
-    digitized_LWK_polar_file_clcd = ["Re1e6_beta0_cl-cd.txt"]
-    digitized_LWK_polar_file_clalpha = ["Re1e6_beta0_cl-alpha.txt"]
+    seg_def_files = (["T012.xlsx"])
+    digitized_LWK_polar_files_clcd = ["Re1e6_beta0_cl-cd.txt"] #, "Re1e6_beta15_cl-cd.txt"])
+    digitized_LWK_polar_files_clalpha = ["Re1e6_beta0_cl-alpha.txt"] #, "Re1e6_beta15_cl-alpha.txt"])
     calibration_type = "file"  # set calibration type ("20sec", "manual", "file")
 
     #******************************************************************************************************************
     #******************************************************************************************************************
 
-    if os.getlogin() == 'joeac':
-        WDIR = "C:/WDIR/MoProMa_Auswertung/Mü13-33/2024-06-13/T002_T009/"
-        segments_def_dir = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/Mü13-33/testsegments_specification"
-    else:
-        WDIR = "D:/Python_Codes/Workingdirectory_Auswertung"
-        segments_def_dir = "D:/Python_Codes/Rohdateien/Zeitabschnitte_Polaren"
+    list_of_df_polars = ([])
 
 
-    calibration_filename = '20240613-2336_manual_calibration_data.p'
-    if os.getlogin() == 'joeac':
-        digitized_LWK_polar_dir = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/Mü13-33/Digitized data Döller LWK/"
-    else:
-        digitized_LWK_polar_dir = "D:/Python_Codes/Rohdateien/digitized_polars_doeller"
-
-
-    digitized_LWK_polar_paths = []
-    for i in range(len(digitized_LWK_polar_file_clcd)):
-        digitized_LWK_polar_paths.append([os.path.join(digitized_LWK_polar_dir, digitized_LWK_polar_file_clcd[i]),
-                                          os.path.join(digitized_LWK_polar_dir, digitized_LWK_polar_file_clalpha[i])])
-
-
-    # Lower cutoff speed for plots
-    U_cutoff = 10
-
-    flap_pivots = np.array([[0.2, 0.0], [0.8, 0.0]]) # LEF and TEF
-    prandtl_data = {"unit name static": "static_K04", "i_sens_static": 31,
-                    "unit name total": "ptot_rake", "i_sens_total": 3}
-                    #"unit name total": "static_K04", "i_sens_total": 32}
-
-    if os.getlogin() == 'joeac':
-        ref_dat_path = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/Mü13-33/01_Reference Data/"
-    else:
-        ref_dat_path = "D:/Python_Codes/Workingdirectory_Auswertung/"
-
-    os.chdir(WDIR)
-
-    foil_coord_path = os.path.join(ref_dat_path, "mue13-33-le15.dat")
-    file_path_msr_pts = os.path.join(ref_dat_path, 'Messpunkte Demonstrator_Mue13-33.xlsx')
-    pickle_path_msr_pts = os.path.join(ref_dat_path, 'Messpunkte Demonstrator.p')
-    cp_path_wall_correction = os.path.join(ref_dat_path, 'mue13-33-le15-tgap0_14.cp')
-
-    # get segments filenames
-    segments_def_path = os.path.join(segments_def_dir, seg_def_file)
-
-
-    # read raw data filenames
-    raw_data_filenames = pd.read_excel(segments_def_path, skiprows=0, usecols="J").dropna().values.astype("str").flatten()
-    # read segment times
-    df_segments = pd.read_excel(segments_def_path, skiprows=1, usecols="A:H").fillna(method='ffill', axis=0)
-    local_timezone = tzlocal.get_localzone_name()
-    df_segments['start'] = pd.to_datetime(df_segments['dd'].astype(str) + ' ' +
-                                          df_segments['hh'].astype(str) + ':' +
-                                          df_segments['mm'].astype(str) + ':' +
-                                          df_segments['ss'].astype(str),
-                                          errors='coerce', utc=False).dt.tz_localize(local_timezone, ambiguous='NaT', nonexistent='shift_forward')
-    df_segments['end'] = pd.to_datetime(df_segments['dd.1'].astype(str) + ' ' +
-                                        df_segments['hh.1'].astype(str) + ':' +
-                                        df_segments['mm.1'].astype(str) + ':' +
-                                        df_segments['ss.1'].astype(str),
-                                        errors='coerce', utc=False).dt.tz_localize(local_timezone, ambiguous='NaT', nonexistent='shift_forward')
-
-    df_segments = df_segments[['start', 'end']]
-
-    # read airfoil data
-    df_airfoil, airfoil = read_airfoil_geometry(file_path_msr_pts, c=l_ref, foil_source=foil_coord_path, eta_flap=eta_flap,
-                                                pickle_file=pickle_path_msr_pts)
-    # calculate wall correction coefficients
-    lambda_wall, sigma_wall, xi_wall = calc_wall_correction_coefficients(df_airfoil, cp_path_wall_correction, l_ref)
-
-    df_sync=pd.DataFrame()
-    list_of_dfs = []
-
-    for filename in raw_data_filenames:
-        file_path_drive = os.path.join(WDIR, f"{filename}_drive.dat")
-        file_path_AOA = os.path.join(WDIR, f"{filename}_AOA.dat")
-        file_path_pstat_K02 = os.path.join(WDIR, f"{filename}_static_K02.dat")
-        file_path_pstat_K03 = os.path.join(WDIR, f"{filename}_static_K03.dat")
-        file_path_pstat_K04 = os.path.join(WDIR, f"{filename}_static_K04.dat")
-        file_path_ptot_rake = os.path.join(WDIR, f"{filename}_ptot_rake.dat")
-        file_path_pstat_rake = os.path.join(WDIR, f"{filename}_pstat_rake.dat")
-        file_path_GPS = os.path.join(WDIR, f"{filename}_GPS.dat")
-        pickle_path_calibration = os.path.join(WDIR, f"{filename}_sensor_calibration_data.p")
-
-        # read sensor data
-        GPS = read_GPS(file_path_GPS)
-        drive = read_drive(file_path_drive, t0=GPS["Time"].iloc[0])
-        alphas = read_AOA_file(file_path_AOA, sigma_wall, t0=GPS["Time"].iloc[0])
-        pstat_K02 = read_DLR_pressure_scanner_file(file_path_pstat_K02, n_sens=32, t0=GPS["Time"].iloc[0])
-        pstat_K03 = read_DLR_pressure_scanner_file(file_path_pstat_K03, n_sens=32, t0=GPS["Time"].iloc[0])
-        pstat_K04 = read_DLR_pressure_scanner_file(file_path_pstat_K04, n_sens=32, t0=GPS["Time"].iloc[0])
-        ptot_rake = read_DLR_pressure_scanner_file(file_path_ptot_rake, n_sens=32, t0=GPS["Time"].iloc[0])
-        pstat_rake = read_DLR_pressure_scanner_file(file_path_pstat_rake, n_sens=5, t0=GPS["Time"].iloc[0])
-
-        # synchronize sensor data
-        df_sync = synchronize_data([pstat_K02, pstat_K03, pstat_K04, ptot_rake, pstat_rake, alphas])
-
-
-        if calibration_type == "file":
-            # apply calibration offset from calibration file
-            df_sync, l_ref = apply_calibration_offset(pickle_path_calibration, df_sync)
-        elif calibration_type == "20sec":
-            # apply calibration offset from first 20 seconds
-            df_sync = apply_calibration_20sec(df_sync)
-        elif calibration_type == "manual":
-            df_sync = apply_manual_calibration(df_sync, calibration_filename)
+    for seg_def_file in seg_def_files:
+        if os.getlogin() == 'joeac':
+            WDIR = "C:/WDIR/MoProMa_Auswertung/Mü13-33/2024-06-13/T002_T009/"
+            segments_def_dir = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/Mü13-33/testsegments_specification"
         else:
-            raise ValueError("wrong parameter 'calibration_type' passed. Either 'file', '20sec' or 'manual'")
-
-        # append the processed data to the all_data DataFrame
-        list_of_dfs.append(df_sync)
-
-    if len(raw_data_filenames) > 1:
-        df_sync = pd.concat(list_of_dfs)
-
-    # calculate wind component
-    df_sync = calc_airspeed_wind(df_sync, prandtl_data, T_air, l_ref)
-
-    # calculate pressure coefficients
-    df_sync = calc_cp(df_sync, prandtl_data, pressure_data_ident_strings=['stat', 'ptot'])
-
-    # calculate lift coefficients
-    df_sync, sens_ident_cols, cp = calc_cl_cm_cdp(df_sync, df_airfoil, airfoil, flap_pivots, lambda_wall, sigma_wall, xi_wall)
-
-    # calculate drag coefficients
-    df_sync = calc_cd(df_sync, l_ref, lambda_wall, sigma_wall, xi_wall)
-
-    # visualisation
-    plot_specify_section(df_sync, U_cutoff)
-    #plot_3D(df_sync)
-    plot_operating_points(df_sync, df_airfoil, airfoil, sens_ident_cols, t_start=87533, t_end=87633) # df_sync.index.get_loc(pd.Timestamp('2024-06-13 23:38:00'))
+            WDIR = "D:/Python_Codes/Workingdirectory_Auswertung"
+            segments_def_dir = "D:/Python_Codes/Rohdateien/Zeitabschnitte_Polaren"
 
 
-    df_polar = prepare_polar_df(df_sync, df_segments)
+        calibration_filename = '20240613-2336_manual_calibration_data.p'
+        if os.getlogin() == 'joeac':
+            digitized_LWK_polar_dir = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/Mü13-33/Digitized data Döller LWK/"
+        else:
+            digitized_LWK_polar_dir = "D:/Python_Codes/Rohdateien/digitized_polars_doeller"
 
-    # Generate PolarTool polar
-    Re_mean = np.around(df_polar.loc[:25, "Re"].mean() / 1e5)*1e5
-    polar = at.PolarTool(name="Mü 13-33", Re=Re_mean, flapangle=eta_flap, WindtunnelName="MoProMa-Car")
-    polar.parseMoProMa_Polar(df_polar)
 
-    # read measured polar from LWK Stuttgart, digitized with getData graph digitizer
+        digitized_LWK_polar_paths = []
+        for i in range(len(digitized_LWK_polar_files_clcd)):
+            digitized_LWK_polar_paths.append([os.path.join(digitized_LWK_polar_dir, digitized_LWK_polar_files_clcd[i]),
+                                              os.path.join(digitized_LWK_polar_dir, digitized_LWK_polar_files_clalpha[i])])
 
-    polarsStu = list()
-    for path_clcd, path_clalpha in digitized_LWK_polar_paths:
-        polarsStu.append(at.PolarTool(name="LWK Stuttgart", Re=Re_mean, flapangle=eta_flap))
-        polarsStu[-1].read_getDataGraphDigitizerPolar(path_clcd, path_clalpha)
 
-    PPAX = dict()
-    PPAX['CLmin'] = 0.0
-    PPAX['CLmax'] = 1.5000
-    PPAX['CLdel'] = 0.5000
-    PPAX['CDmin'] = 0.0000
-    PPAX['CDmax'] = 0.0200
-    PPAX['CDdel'] = 0.0050
-    PPAX['ALmin'] = -2.0000
-    PPAX['ALmax'] = 17.0000
-    PPAX['ALdel'] = 2.0000
-    PPAX['CMmin'] = -0.2500
-    PPAX['CMmax'] = 0.000
-    PPAX['CMdel'] = 0.0500
+        flap_pivots = np.array([[0.2, 0.0], [0.8, 0.0]]) # LEF and TEF
+        prandtl_data = {"unit name static": "static_K04", "i_sens_static": 31,
+                        "unit name total": "ptot_rake", "i_sens_total": 3}
+                        #"unit name total": "static_K04", "i_sens_total": 32}
 
-    LineAppearance = dict()
-    LineAppearance['color'] = list()
-    LineAppearance['linestyle'] = list()
-    LineAppearance['marker'] = list()
+        if os.getlogin() == 'joeac':
+            ref_dat_path = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/Mü13-33/01_Reference Data/"
+        else:
+            ref_dat_path = "D:/Python_Codes/Workingdirectory_Auswertung/"
 
-    LineAppearance['color'].append('r')
-    LineAppearance['color'].append('k')
+        os.chdir(WDIR)
 
-    LineAppearance['linestyle'].append("None")
-    LineAppearance['linestyle'].append("-")
+        foil_coord_path = os.path.join(ref_dat_path, "mue13-33-le15.dat")
+        file_path_msr_pts = os.path.join(ref_dat_path, 'Messpunkte Demonstrator_Mue13-33.xlsx')
+        pickle_path_msr_pts = os.path.join(ref_dat_path, 'Messpunkte Demonstrator.p')
+        cp_path_wall_correction = os.path.join(ref_dat_path, 'mue13-33-le15-tgap0_14.cp')
 
-    LineAppearance['marker'].append("^")
-    LineAppearance['marker'].append("s")
+        # get segments filenames
+        segments_def_path = os.path.join(segments_def_dir, seg_def_file)
 
-    polar.plotPolar(additionalPolars=polarsStu, PPAX=PPAX, Colorplot=True, LineAppearance=LineAppearance)
 
-    settling_time_average(df_sync)
+        # read raw data filenames
+        raw_data_filenames = pd.read_excel(segments_def_path, skiprows=0, usecols="J").dropna().values.astype("str").flatten()
+        # read segment times
+        df_segments = pd.read_excel(segments_def_path, skiprows=1, usecols="A:H").fillna(method='ffill', axis=0)
+        local_timezone = tzlocal.get_localzone_name()
+        df_segments['start'] = pd.to_datetime(df_segments['dd'].astype(str) + ' ' +
+                                              df_segments['hh'].astype(str) + ':' +
+                                              df_segments['mm'].astype(str) + ':' +
+                                              df_segments['ss'].astype(str),
+                                              errors='coerce', utc=False).dt.tz_localize(local_timezone, ambiguous='NaT', nonexistent='shift_forward')
+        df_segments['end'] = pd.to_datetime(df_segments['dd.1'].astype(str) + ' ' +
+                                            df_segments['hh.1'].astype(str) + ':' +
+                                            df_segments['mm.1'].astype(str) + ':' +
+                                            df_segments['ss.1'].astype(str),
+                                            errors='coerce', utc=False).dt.tz_localize(local_timezone, ambiguous='NaT', nonexistent='shift_forward')
+
+        df_segments = df_segments[['start', 'end']]
+
+        # read airfoil data
+        df_airfoil, airfoil = read_airfoil_geometry(file_path_msr_pts, c=l_ref, foil_source=foil_coord_path, eta_flap=eta_flap,
+                                                    pickle_file=pickle_path_msr_pts)
+        # calculate wall correction coefficients
+        lambda_wall, sigma_wall, xi_wall = calc_wall_correction_coefficients(df_airfoil, cp_path_wall_correction, l_ref)
+
+        df_sync=pd.DataFrame()
+        list_of_dfs = []
+
+        for filename in raw_data_filenames:
+            file_path_drive = os.path.join(WDIR, f"{filename}_drive.dat")
+            file_path_AOA = os.path.join(WDIR, f"{filename}_AOA.dat")
+            file_path_pstat_K02 = os.path.join(WDIR, f"{filename}_static_K02.dat")
+            file_path_pstat_K03 = os.path.join(WDIR, f"{filename}_static_K03.dat")
+            file_path_pstat_K04 = os.path.join(WDIR, f"{filename}_static_K04.dat")
+            file_path_ptot_rake = os.path.join(WDIR, f"{filename}_ptot_rake.dat")
+            file_path_pstat_rake = os.path.join(WDIR, f"{filename}_pstat_rake.dat")
+            file_path_GPS = os.path.join(WDIR, f"{filename}_GPS.dat")
+            pickle_path_calibration = os.path.join(WDIR, f"{filename}_sensor_calibration_data.p")
+
+            # read sensor data
+            GPS = read_GPS(file_path_GPS)
+            drive = read_drive(file_path_drive, t0=GPS["Time"].iloc[0])
+            alphas = read_AOA_file(file_path_AOA, sigma_wall, t0=GPS["Time"].iloc[0])
+            pstat_K02 = read_DLR_pressure_scanner_file(file_path_pstat_K02, n_sens=32, t0=GPS["Time"].iloc[0])
+            pstat_K03 = read_DLR_pressure_scanner_file(file_path_pstat_K03, n_sens=32, t0=GPS["Time"].iloc[0])
+            pstat_K04 = read_DLR_pressure_scanner_file(file_path_pstat_K04, n_sens=32, t0=GPS["Time"].iloc[0])
+            ptot_rake = read_DLR_pressure_scanner_file(file_path_ptot_rake, n_sens=32, t0=GPS["Time"].iloc[0])
+            pstat_rake = read_DLR_pressure_scanner_file(file_path_pstat_rake, n_sens=5, t0=GPS["Time"].iloc[0])
+
+            # synchronize sensor data
+            df_sync = synchronize_data([pstat_K02, pstat_K03, pstat_K04, ptot_rake, pstat_rake, alphas])
+
+
+            if calibration_type == "file":
+                # apply calibration offset from calibration file
+                df_sync, l_ref = apply_calibration_offset(pickle_path_calibration, df_sync)
+            elif calibration_type == "20sec":
+                # apply calibration offset from first 20 seconds
+                df_sync = apply_calibration_20sec(df_sync)
+            elif calibration_type == "manual":
+                df_sync = apply_manual_calibration(df_sync, calibration_filename)
+            else:
+                raise ValueError("wrong parameter 'calibration_type' passed. Either 'file', '20sec' or 'manual'")
+
+            # append the processed data to the all_data DataFrame
+            list_of_dfs.append(df_sync)
+
+        if len(raw_data_filenames) > 1:
+            df_sync = pd.concat(list_of_dfs)
+
+        # calculate wind component
+        df_sync = calc_airspeed_wind(df_sync, prandtl_data, T_air, l_ref)
+
+        # calculate pressure coefficients
+        df_sync = calc_cp(df_sync, prandtl_data, pressure_data_ident_strings=['stat', 'ptot'])
+
+        # calculate lift coefficients
+        df_sync, sens_ident_cols, cp = calc_cl_cm_cdp(df_sync, df_airfoil, airfoil, flap_pivots, lambda_wall, sigma_wall, xi_wall)
+
+        # calculate drag coefficients
+        df_sync = calc_cd(df_sync, l_ref, lambda_wall, sigma_wall, xi_wall)
+
+        # visualisation
+        plot_specify_section(df_sync, df_segments, U_cutoff)
+        #plot_3D(df_sync)
+        plot_operating_points(df_sync, df_airfoil, airfoil, sens_ident_cols, t_start=87533, t_end=87633) # df_sync.index.get_loc(pd.Timestamp('2024-06-13 23:38:00'))
+
+
+        df_polar = prepare_polar_df(df_sync, df_segments)
+        list_of_df_polars.append(df_polar)
+
+    plt.ion()
+    for df_polar in list_of_df_polars:
+        # Generate PolarTool polar
+        Re_mean = np.around(df_polar.loc[:25, "Re"].mean() / 1e5)*1e5
+        polar = at.PolarTool(name="Mü 13-33", Re=Re_mean, flapangle=eta_flap, WindtunnelName="MoProMa-Car")
+        polar.parseMoProMa_Polar(df_polar)
+
+        """if len(digitized_LWK_polar_paths) == 1:
+            polarsStu = list()
+            for path_clcd, path_clalpha in digitized_LWK_polar_path:
+                polarsStu.append(at.PolarTool(name="LWK Stuttgart", Re=Re_mean, flapangle=eta_flap))
+                polarsStu[-1].read_getDataGraphDigitizerPolar(path_clcd, path_clalpha)
+        elif len(digitized_LWK_polar_paths) == 2:
+            path_clcd = 
+
+            polarsStu = list()
+            for path_clcd, path_clalpha in digitized_LWK_polar_path:
+                polarsStu.append(at.PolarTool(name="LWK Stuttgart", Re=Re_mean, flapangle=eta_flap))
+                polarsStu[-1].read_getDataGraphDigitizerPolar(path_clcd, path_clalpha)"""
+
+
+        # read measured polar from LWK Stuttgart, digitized with getData graph digitizer
+
+
+        polarsStu = list()
+        for path_clcd, path_clalpha in digitized_LWK_polar_paths:
+            polarsStu.append(at.PolarTool(name="LWK Stuttgart", Re=Re_mean, flapangle=eta_flap))
+            polarsStu[-1].read_getDataGraphDigitizerPolar(path_clcd, path_clalpha)
+
+        PPAX = dict()
+        PPAX['CLmin'] = 0.0
+        PPAX['CLmax'] = 1.5000
+        PPAX['CLdel'] = 0.5000
+        PPAX['CDmin'] = 0.0000
+        PPAX['CDmax'] = 0.0250
+        PPAX['CDdel'] = 0.0050
+        PPAX['ALmin'] = 0.0000
+        PPAX['ALmax'] = 19.0000
+        PPAX['ALdel'] = 2.0000
+        PPAX['CMmin'] = -0.2500
+        PPAX['CMmax'] = 0.000
+        PPAX['CMdel'] = 0.0500
+
+        LineAppearance = dict()
+        LineAppearance['color'] = list()
+        LineAppearance['linestyle'] = list()
+        LineAppearance['marker'] = list()
+
+        LineAppearance['color'].append('r')
+        LineAppearance['color'].append('k')
+
+        LineAppearance['linestyle'].append("None")
+        LineAppearance['linestyle'].append("-")
+
+        LineAppearance['marker'].append("^")
+        LineAppearance['marker'].append("s")
+
+        polar.plotPolar(additionalPolars=polarsStu, PPAX=PPAX, Colorplot=True, LineAppearance=LineAppearance)
+
+    #settling_time_average(df_sync)
 
     print("done")
 
