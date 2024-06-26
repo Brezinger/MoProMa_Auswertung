@@ -935,10 +935,19 @@ def settling_time_average(df):
 
 if __name__ == '__main__':
 
+    # constants and input data
+    l_ref = 0.7
+    T_air = 288
     #******************************************************************************************************************
     #******************************************************************************************************************
+
+    eta_flap = 0
     # Raw data file prefix
     seg_def_file = "T007.xlsx"
+    digitized_LWK_polar_file_clcd = ["Re1e6_beta0_cl-cd.txt"]
+    digitized_LWK_polar_file_clalpha = ["Re1e6_beta0_cl-alpha.txt"]
+    calibration_type = "file"  # set calibration type ("20sec", "manual", "file")
+
     #******************************************************************************************************************
     #******************************************************************************************************************
 
@@ -949,20 +958,14 @@ if __name__ == '__main__':
         WDIR = "D:/Python_Codes/Workingdirectory_Auswertung"
         segments_def_dir = "D:/Python_Codes/Rohdateien/Zeitabschnitte_Polaren"
 
-    # constants and input data
-    l_ref = 0.7
-    eta_flap = 0
-    T_air = 288
-    # set calibration type ("20sec", "manual", "file")
-    calibration_type = "file"
+
     calibration_filename = '20240613-2336_manual_calibration_data.p'
     if os.getlogin() == 'joeac':
         digitized_LWK_polar_dir = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/Mü13-33/Digitized data Döller LWK/"
     else:
         digitized_LWK_polar_dir = "D:/Python_Codes/Rohdateien/digitized_polars_doeller"
 
-    digitized_LWK_polar_file_clcd = ["Re1e6_beta0_cl-cd.txt"]
-    digitized_LWK_polar_file_clalpha = ["Re1e6_beta0_cl-alpha.txt"]
+
     digitized_LWK_polar_paths = []
     for i in range(len(digitized_LWK_polar_file_clcd)):
         digitized_LWK_polar_paths.append([os.path.join(digitized_LWK_polar_dir, digitized_LWK_polar_file_clcd[i]),
