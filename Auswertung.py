@@ -18,7 +18,10 @@ import matplotlib.pyplot as plt
 
 from scipy.signal import  savgol_filter
 from scipy import interpolate, integrate, optimize, stats
-sys.path.append("C:/git/airfoilwinggeometry")
+if os.getlogin() == 'joeac':
+    sys.path.append("C:/git/airfoilwinggeometry")
+else:
+    sys.path.append("D:/Python_Codes/Uebung1/modules/airfoilwinggeometry")
 from airfoilwinggeometry.AirfoilPackage import AirfoilTools as at
 
 
@@ -944,6 +947,7 @@ if __name__ == '__main__':
         segments_def_dir = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/Mü13-33/testsegments_specification"
     else:
         WDIR = "D:/Python_Codes/Workingdirectory_Auswertung"
+        segments_def_dir = "D:/Python_Codes/Rohdateien/Zeitabschnitte_Polaren"
 
     # constants and input data
     l_ref = 0.7
@@ -952,10 +956,13 @@ if __name__ == '__main__':
     # set calibration type ("20sec", "manual", "file")
     calibration_type = "file"
     calibration_filename = '20240613-2336_manual_calibration_data.p'
+    if os.getlogin() == 'joeac':
+        digitized_LWK_polar_dir = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/Mü13-33/Digitized data Döller LWK/"
+    else:
+        digitized_LWK_polar_dir = "D:/Python_Codes/Rohdateien/digitized_polars_doeller"
 
-    digitized_LWK_polar_dir = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/Mü13-33/Digitized data Döller LWK/"
-    digitized_LWK_polar_file_clcd = ["Re1e6_cl-cd.txt"]
-    digitized_LWK_polar_file_clalpha = ["Re1e6_cl-alpha.txt"]
+    digitized_LWK_polar_file_clcd = ["Re1e6_beta0_cl-cd.txt"]
+    digitized_LWK_polar_file_clalpha = ["Re1e6_beta0_cl-alpha.txt"]
     digitized_LWK_polar_paths = []
     for i in range(len(digitized_LWK_polar_file_clcd)):
         digitized_LWK_polar_paths.append([os.path.join(digitized_LWK_polar_dir, digitized_LWK_polar_file_clcd[i]),
