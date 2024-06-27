@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
 import tzlocal
+import itertools
 
 from matplotlib.dates import DateFormatter
 import matplotlib.pyplot as plt
@@ -947,17 +948,18 @@ if __name__ == '__main__':
     #******************************************************************************************************************
     #******************************************************************************************************************
 
-    eta_flap = 0
     # Raw data file prefix
-    seg_def_files = (["T012.xlsx"])
-    digitized_LWK_polar_files_clcd = ["Re1e6_beta0_cl-cd.txt"] #, "Re1e6_beta15_cl-cd.txt"])
-    digitized_LWK_polar_files_clalpha = ["Re1e6_beta0_cl-alpha.txt"] #, "Re1e6_beta15_cl-alpha.txt"])
-    calibration_type = "file"  # set calibration type ("20sec", "manual", "file")
+    seg_def_files = (["T010.xlsx"])
+    digitized_LWK_polar_files_clcd = (["Re1e6_beta0_cl-cd.txt"])
+    digitized_LWK_polar_files_clalpha = (["Re1e6_beta0_cl-alpha.txt"])
+    # set calibration type in seg_def Excel file ("20sec", "manual", "file")
+    # set flap deflection in seg_def Excel file
 
     #******************************************************************************************************************
     #******************************************************************************************************************
 
     list_of_df_polars = ([])
+    list_of_polars = []
 
 
     for seg_def_file in seg_def_files:
@@ -1004,7 +1006,13 @@ if __name__ == '__main__':
 
 
         # read raw data filenames
-        raw_data_filenames = pd.read_excel(segments_def_path, skiprows=0, usecols="J").dropna().values.astype("str").flatten()
+        raw_data_filenames = pd.read_excel(segments_def_path, skiprows=0, usecols="J").dropna().values.astype(
+            "str").flatten()
+        calibration_types = pd.read_excel(segments_def_path, skiprows=0, usecols="K").dropna().values.astype(
+            "str").flatten()
+        eta_flap = pd.read_excel(segments_def_path, skiprows=0, usecols="L").dropna().values.astype(
+            "float").flatten()
+        eta_flap = eta_flap[0]
         # read segment times
         df_segments = pd.read_excel(segments_def_path, skiprows=1, usecols="A:H").fillna(method='ffill', axis=0)
         local_timezone = tzlocal.get_localzone_name()
@@ -1030,7 +1038,12 @@ if __name__ == '__main__':
         df_sync=pd.DataFrame()
         list_of_dfs = []
 
-        for filename in raw_data_filenames:
+        for i, filename in enumerate(raw_data_filenames):
+            calibration_type = calibration_types[i]
+            if calibration_type not in ["file"," 20sec"]:
+                calibration_filename = calibration_type
+                calibration_type= "manual"
+
             file_path_drive = os.path.join(WDIR, f"{filename}_drive.dat")
             file_path_AOA = os.path.join(WDIR, f"{filename}_AOA.dat")
             file_path_pstat_K02 = os.path.join(WDIR, f"{filename}_static_K02.dat")
@@ -1093,12 +1106,12 @@ if __name__ == '__main__':
         df_polar = prepare_polar_df(df_sync, df_segments)
         list_of_df_polars.append(df_polar)
 
-    plt.ion()
-    for df_polar in list_of_df_polars:
+
         # Generate PolarTool polar
         Re_mean = np.around(df_polar.loc[:25, "Re"].mean() / 1e5)*1e5
         polar = at.PolarTool(name="Mü 13-33", Re=Re_mean, flapangle=eta_flap, WindtunnelName="MoProMa-Car")
         polar.parseMoProMa_Polar(df_polar)
+        list_of_polars.append(polar)
 
         """if len(digitized_LWK_polar_paths) == 1:
             polarsStu = list()
@@ -1117,40 +1130,74 @@ if __name__ == '__main__':
         # read measured polar from LWK Stuttgart, digitized with getData graph digitizer
 
 
-        polarsStu = list()
-        for path_clcd, path_clalpha in digitized_LWK_polar_paths:
-            polarsStu.append(at.PolarTool(name="LWK Stuttgart", Re=Re_mean, flapangle=eta_flap))
-            polarsStu[-1].read_getDataGraphDigitizerPolar(path_clcd, path_clalpha)
+    polarsStu = list()
+    for path_clcd, path_clalpha in digitized_LWK_polar_paths:
+        polarsStu.append(at.PolarTool(name="LWK Stuttgart", Re=Re_mean, flapangle=eta_flap))
+        polarsStu[-1].read_getDataGraphDigitizerPolar(path_clcd, path_clalpha)
 
-        PPAX = dict()
-        PPAX['CLmin'] = 0.0
-        PPAX['CLmax'] = 1.5000
-        PPAX['CLdel'] = 0.5000
-        PPAX['CDmin'] = 0.0000
-        PPAX['CDmax'] = 0.0250
-        PPAX['CDdel'] = 0.0050
-        PPAX['ALmin'] = 0.0000
-        PPAX['ALmax'] = 19.0000
-        PPAX['ALdel'] = 2.0000
-        PPAX['CMmin'] = -0.2500
-        PPAX['CMmax'] = 0.000
-        PPAX['CMdel'] = 0.0500
+    PPAX = dict()
+    PPAX['CLmin'] = 0.0
+    PPAX['CLmax'] = 2.000
+    PPAX['CLdel'] = 0.5000
+    PPAX['CDmin'] = 0.0000
+    PPAX['CDmax'] = 0.0250
+    PPAX['CDdel'] = 0.0050
+    PPAX['ALmin'] = 0.0000
+    PPAX['ALmax'] = 25.0000
+    PPAX['ALdel'] = 2.0000
+    PPAX['CMmin'] = -0.2500
+    PPAX['CMmax'] = 0.000
+    PPAX['CMdel'] = 0.0500
 
-        LineAppearance = dict()
-        LineAppearance['color'] = list()
-        LineAppearance['linestyle'] = list()
-        LineAppearance['marker'] = list()
+    LineAppearance = dict()
 
-        LineAppearance['color'].append('r')
-        LineAppearance['color'].append('k')
 
-        LineAppearance['linestyle'].append("None")
-        LineAppearance['linestyle'].append("-")
 
-        LineAppearance['marker'].append("^")
-        LineAppearance['marker'].append("s")
 
-        polar.plotPolar(additionalPolars=polarsStu, PPAX=PPAX, Colorplot=True, LineAppearance=LineAppearance)
+    LineAppearance['color'] = []
+    LineAppearance['linestyle'] = []
+    LineAppearance['marker'] = []
+    # R G B
+    LineAppearance['color'].append((255. / 255., 68. / 255., 68. / 255.))  # red
+    LineAppearance['color'].append("k")
+    LineAppearance['color'].append((255. / 255., 165. / 255., 0. / 255.))  # orange
+    LineAppearance['color'].append("k")
+    LineAppearance['color'].append((255. / 255., 255. / 255., 68. / 255.))  # yellow
+    LineAppearance['color'].append("k")
+    LineAppearance['color'].append((68. / 255., 255. / 255., 68. / 255.))  # green
+    LineAppearance['color'].append((68. / 255., 255. / 255., 255. / 255.))  # turquoise
+    LineAppearance['color'].append((60. / 255., 155. / 255., 255. / 255.))  # light blue
+    LineAppearance['color'].append((205. / 255., 55. / 255., 255. / 255.))  # purple
+    LineAppearance['color'].append((255. / 255., 0. / 255., 255. / 255.))  # rose/purple
+
+    LineAppearance['linestyle'].append("-")
+    LineAppearance['linestyle'].append("None")
+    LineAppearance['linestyle'].append("None")
+    LineAppearance['linestyle'].append("-")
+    LineAppearance['linestyle'].append("None")
+    LineAppearance['linestyle'].append("-")
+    LineAppearance['linestyle'].append("None")
+    LineAppearance['linestyle'].append("-")
+
+
+    LineAppearance['marker'].append("^")
+    LineAppearance['marker'].append("^")
+    LineAppearance['marker'].append("s")
+    LineAppearance['marker'].append("s")
+    LineAppearance['marker'].append('o')
+    LineAppearance['marker'].append('o')
+    LineAppearance['marker'].append('o')
+    LineAppearance['marker'].append('x')
+    LineAppearance['marker'].append('x')
+
+    altsort_polars = []
+    for a, b in itertools.zip_longest(list_of_polars, polarsStu):
+        if a:
+            altsort_polars.append(a)
+        if b:
+            altsort_polars.append(b)
+
+    altsort_polars[0].plotPolar(additionalPolars=altsort_polars[1:], PPAX=PPAX, Colorplot=True, LineAppearance=LineAppearance)
 
     #settling_time_average(df_sync)
 
