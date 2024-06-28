@@ -1024,7 +1024,7 @@ if __name__ == '__main__':
 
     list_of_df_polars = ([])
     list_of_polars = []
-
+    list_of_eta_flaps = []
 
     for seg_def_file in seg_def_files:
 
@@ -1048,8 +1048,10 @@ if __name__ == '__main__':
         eta_flap = pd.read_excel(segments_def_path, skiprows=0, usecols="L").dropna().values.astype(
             "float").flatten()
         eta_flap = eta_flap[0]
+        list_of_eta_flaps.append(eta_flap)
         # read segment times
-        df_segments = pd.read_excel(segments_def_path, skiprows=1, usecols="A:H").fillna(method='ffill', axis=0)
+        df_segments = pd.read_excel(segments_def_path, skiprows=1, usecols="A:H").ffill(axis=0)
+        df_segments[["hh", "mm", "ss", "hh.1", "mm.1", "ss.1"]] = df_segments[["hh", "mm", "ss", "hh.1", "mm.1", "ss.1"]].astype(int)
         local_timezone = tzlocal.get_localzone_name()
         df_segments['start'] = pd.to_datetime(df_segments['dd'].astype(str) + ' ' +
                                               df_segments['hh'].astype(str) + ':' +
@@ -1152,7 +1154,7 @@ if __name__ == '__main__':
 
     # read measured polar from LWK Stuttgart, digitized with getData graph digitizer
     polarsStu = list()
-    for path_clcd, path_clalpha in digitized_LWK_polar_paths:
+    for (path_clcd, path_clalpha), eta_flap in zip(digitized_LWK_polar_paths, list_of_eta_flaps):
         polarsStu.append(at.PolarTool(name="LWK Stuttgart", Re=Re_mean, flapangle=eta_flap))
         polarsStu[-1].read_getDataGraphDigitizerPolar(path_clcd, path_clalpha)
 
