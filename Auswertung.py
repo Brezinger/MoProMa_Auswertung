@@ -5,15 +5,14 @@ Created on Mon Apr 29 11:21:04 2024
 @author: Besitzer
 """
 import copy
-
 import sys
 import os
 import pickle
 import numpy as np
 import pandas as pd
-from datetime import datetime, timedelta
 import tzlocal
 import itertools
+import pynmea2
 
 from matplotlib.dates import DateFormatter
 import matplotlib.pyplot as plt
@@ -27,11 +26,7 @@ else:
     sys.path.append("D:/Python_Codes/Uebung1/modules/airfoilwinggeometry")
 from airfoilwinggeometry.AirfoilPackage import AirfoilTools as at
 
-
-
-
-
-def read_AOA_file(filename, sigma_wall, t0):
+def read_AOA_file(filename, sigma_wall, t0, alpha_sens_offset=214.73876953125):
     """
     Converts raw AOA data to pandas DataFrame
     :param filename:       File name
@@ -43,7 +38,7 @@ def read_AOA_file(filename, sigma_wall, t0):
     df = df.dropna()
 
     # Compute the absolute sensor position in degrees
-    abs_sensor_pos_deg = - df['Position'] / 2**14 * 360 - df['Turn'] * 360 + 214.73876953125
+    abs_sensor_pos_deg = - df['Position'] / 2**14 * 360 - df['Turn'] * 360 + alpha_sens_offset
     # Compute the gear ratio and alpha
     gear_ratio = 60 / (306 * 2)
     df['alpha'] = abs_sensor_pos_deg * gear_ratio
@@ -67,7 +62,11 @@ def read_AOA_file(filename, sigma_wall, t0):
 
     return df
 def read_GPS(filename):
-    df = pd.read_csv(filename, header=None)
+
+    with open(filename) as file:
+        lns = file.readlines()
+
+    df = pd.DataFrame(lns)
     # Apply the parsing function to each row
     parsed_data = df.apply(parse_gprmc_row, axis=1)
 
@@ -77,40 +76,24 @@ def read_GPS(filename):
     # Drop rows with any None values (if any invalid GPRMC sentences)
     df_parsed = df_parsed.dropna()
 
-    df_parsed["Time"] = df_parsed["Time"].dt.tz_localize('UTC')
+
 
     return df_parsed
-def parse_gprmc_row(row):
-    """
-    processes GPS data in gprmc format
-    :param row:
-    :return:
-    """
-    parts = row.tolist()
-    parts = [str(part) for part in parts]
-    if len(parts) >= 13 and parts[0] == '$GPRMC' and parts[2] == 'A':
-        try:
-            time_str = parts[1]
-            date_str = parts[9]
-            latitude = float(parts[3][:2]) + float(parts[3][2:]) / 60.0
-            if parts[4] == 'S':
-                latitude = -latitude
-            longitude = float(parts[5][:2]) + float(parts[5][2:]) / 60.0
-            if parts[6] == 'W':
-                longitude = -longitude
-            gps_speed = float(parts[7]) * 1.852/3.6
 
-            # Convert time and date to datetime
-            datetime_str = date_str + time_str
-            seconds, microseconds = datetime_str.split('.')
-            microseconds = microseconds.ljust(6, '0')  # Pad to ensure 6 digits
-            datetime_str = f"{seconds}.{microseconds}"
-            datetime_format = '%d%m%y%H%M%S.%f'
-            datetime_val = pd.to_datetime(datetime_str, format=datetime_format)
-
-            return datetime_val, latitude, longitude, gps_speed
-        except (ValueError, IndexError) as e:
-            # Handle any parsing errors
+def parse_gprmc_row(line):
+    if "$GPRMC" in line.values[0] or "$GNRMC" in line.values[0]:
+        data = pynmea2.parse(line.values[0])
+        if data.is_valid:
+            # Get the time
+            timestamp = data.datetime
+            # Get the speed in knots
+            speed_knots = data.spd_over_grnd
+            lat = data.latitude
+            lon = data.longitude
+            # Convert the speed to km/h (1 knot = 1.852 km/h)
+            speed_ms = speed_knots * 1.852/3.6
+            return timestamp, lat, lon, speed_ms
+        else:
             return None, None, None, None
     else:
         return None, None, None, None
@@ -201,6 +184,7 @@ def read_DLR_pressure_scanner_file(filename, n_sens, t0):
 
     # Add this difference to the start time (in milliseconds) and convert back to datetime
     df['Time'] = pd.to_datetime(start_time_ms + time_diff_ms, unit='ms')
+
 
     return df
 def synchronize_data(merge_dfs_list):
@@ -588,7 +572,7 @@ def calc_wall_correction_coefficients(df_airfoil, filepath, l_ref):
     xi_wall_corr = -0.00335 * l_ref**2
 
     return lambda_wall_corr, sigma_wall_corr, xi_wall_corr
-def plot_specify_segment(df_cp, df_p_abs, df_segments, U_cutoff=10, plot_pstat=False, unit_sens_pstat="static_K04_31", i_seg_plot=None):
+def plot_time_series(df_cp, df_p_abs, df_segments, U_cutoff=10, plot_drive=False, plot_pstat=False, unit_sens_pstat="static_K04_31", i_seg_plot=None):
     """
 
     :param df_sync:
@@ -613,17 +597,24 @@ def plot_specify_segment(df_cp, df_p_abs, df_segments, U_cutoff=10, plot_pstat=F
     # plot alpha, cl, cm, cmr over time
     fig, host = plt.subplots()
     # Create twin axes on the right side of the host axis
-    ax1 = host.twinx()
-    ax2 = host.twinx()
-    ax3 = host.twinx()
+    ax_alpha = host.twinx()
+    ax_Re = host.twinx()
+    ax_cd = host.twinx()
     if plot_pstat:
         ax4 = host.twinx()
+    if plot_drive:
+        ax5 = host.twinx()
     # Offset the right twin axes so they don't overlap
-    ax1.spines['right'].set_position(('outward', 120))
-    ax2.spines['right'].set_position(('outward', 60))
-    ax3.spines['right'].set_position(('outward', 0))
+    ax_alpha.spines['right'].set_position(('outward', 120))
+    ax_Re.spines['right'].set_position(('outward', 60))
+    ax_cd.spines['right'].set_position(('outward', 0))
+    axpos = 120
     if plot_pstat:
-        ax4.spines['right'].set_position(('outward', 180))
+        axpos += 60
+        ax4.spines['right'].set_position(('outward', axpos))
+    if plot_drive:
+        axpos +=60
+        ax5.spines['right'].set_position(('outward', axpos))
 
     # filter data
     window = 201
@@ -634,18 +625,22 @@ def plot_specify_segment(df_cp, df_p_abs, df_segments, U_cutoff=10, plot_pstat=F
     p_stat_filt = savgol_filter(df_p_abs[unit_sens_pstat], window, polyorder)
 
     # Set plot lines
-    ax1.plot(df_cp.loc[df_cp["U_CAS"] > U_cutoff].index, df_cp.loc[df_cp["U_CAS"] > U_cutoff, "alpha"], "k-", label=r"$\alpha$", zorder=5)
-    line = ax2.plot(df_cp.index, df_cp["Re"], "y-", label=r"$Re$", zorder=4, alpha=0.35)
-    ax2.plot(df_cp.index, Re_filt, color=line[0].get_color())
+    ax_alpha.plot(df_cp.loc[df_cp["U_CAS"] > U_cutoff].index, df_cp.loc[df_cp["U_CAS"] > U_cutoff, "alpha"], "k-", label=r"$\alpha$", zorder=5)
+    line = ax_Re.plot(df_cp.index, df_cp["Re"], "y-", label=r"$Re$", zorder=4, alpha=0.35)
+    ax_Re.plot(df_cp.index, Re_filt, color=line[0].get_color())
     line = host.plot(df_cp.loc[df_cp["U_CAS"] > U_cutoff].index, df_cp.loc[df_cp["U_CAS"] > U_cutoff, "cl"], label="$c_l$", zorder=3, alpha=0.35)
     host.plot(df_cp.loc[df_cp["U_CAS"] > U_cutoff].index, cl_filt, color=line[0].get_color())
     #host.plot(df.loc[df["U_CAS"] > U_cutoff].index, df.loc[df["U_CAS"] > U_cutoff, "cm"], label="$c_{m}$", zorder=2, alpha=0.35)
-    line = ax3.plot(df_cp.loc[df_cp["U_CAS"] > U_cutoff].index, df_cp.loc[df_cp["U_CAS"] > U_cutoff, "cd"], color="red", label="$c_d$", zorder=1, alpha=0.35)
-    ax3.plot(df_cp.loc[df_cp["U_CAS"] > U_cutoff].index, cd_filt, color=line[0].get_color())
-    ax3.set_ylim([0., cd_filt.max()])
+    line = ax_cd.plot(df_cp.loc[df_cp["U_CAS"] > U_cutoff].index, df_cp.loc[df_cp["U_CAS"] > U_cutoff, "cd"], color="red", label="$c_d$", zorder=1, alpha=0.35)
+    ax_cd.plot(df_cp.loc[df_cp["U_CAS"] > U_cutoff].index, cd_filt, color=line[0].get_color())
+
     if plot_pstat:
         line = ax4.plot(df_p_abs.index, df_p_abs[unit_sens_pstat], color="green", label="$p_{stat}$", zorder=1, alpha=0.35)
         ax4.plot(df_p_abs.index, p_stat_filt, color=line[0].get_color())
+
+    if plot_drive:
+        ax5.plot(df_cp.index, df_cp["Rake Position"], color="purple")
+
     for index, row in df_segments.iterrows():
         if index == i_seg_plot:
             color = "green"
@@ -654,21 +649,23 @@ def plot_specify_segment(df_cp, df_p_abs, df_segments, U_cutoff=10, plot_pstat=F
         host.axvspan(row['start'], row['end'], color=color, alpha=0.5)
 
     # Formatting the x-axis to show minutes and seconds
-    host.xaxis.set_major_formatter(DateFormatter("%M:%S"))
+    host.xaxis.set_major_formatter(DateFormatter("%H:%M:%S"))
     #host.xaxis.set_major_formatter(ticker.FormatStrFormatter('%0.1f'))
     # Setting labels
-    host.set_xlabel("$Time[mm:ss]$")
-    ax1.set_ylabel(r"$\alpha~\mathrm{[^\circ]}$")
+    host.set_xlabel("$Time[hh:mm:ss, UTC]$")
+    ax_alpha.set_ylabel(r"$\alpha~\mathrm{[^\circ]}$")
     host.set_ylabel("$c_l$")
-    ax2.set_ylabel("$Re$")
-    ax3.set_ylabel("$c_d$")
+    ax_Re.set_ylabel("$Re$")
+    ax_cd.set_ylabel("$c_d$")
+    ax_cd.set_ylim([0., 0.035])
+    host.set_ylim([0, 2])
     if plot_pstat:
         ax4.set_ylabel("$p_{stat}~\mathrm{[Pa]}$")
     # Enabling grid on host
     host.grid()
     # Adding legends from all axes
     lines, labels = [], []
-    axes = [host, ax1, ax2, ax3]
+    axes = [host, ax_alpha, ax_Re, ax_cd]
     if plot_pstat:
         axes.append(ax4)
     for ax in axes:
@@ -685,10 +682,6 @@ def plot_specify_segment(df_cp, df_p_abs, df_segments, U_cutoff=10, plot_pstat=F
     ax3.plot(df["Longitude"], df["Latitude"], "k-")
     ax3.plot(df.loc[df["U_CAS"] > 5, "Longitude"], df.loc[df["U_CAS"] > 5, "Latitude"], "g-")
     """
-
-    # plot c_d, rake position and rake speed over time
-    #fig6, ax6 = plt.subplots()
-    #ax7 = ax6.twinx()
 
     """ax6.set_xlabel("$Time$")
     ax7.set_xlabel("Rake Position / Speed")
@@ -960,17 +953,20 @@ if __name__ == '__main__':
     # Lower cutoff speed for plots
     U_cutoff = 10
     # specify test segment, which should be plotted
-    i_seg_plot = 5
+    i_seg_plot = 0
 
-    airfoil = "Mü13-33"
-    #airfoil = "B200"
+    #airfoil = "Mü13-33"
+    airfoil = "B200"
     # constants and input data
     if airfoil == "Mü13-33":
         l_ref = 0.7
+        # specifiy, if drive data should be synchronized
+        sync_drive = False
         # Raw data file prefix
         seg_def_files = ["T025_untrimmed.xlsx"]
         digitized_LWK_polar_files_clcd = ["Re8e5_beta15_cl-cd.txt"]
         digitized_LWK_polar_files_clalpha = ["Re8e5_beta15_cl-alpha.txt"]
+        XFOIL_polar_files = []
         # set calibration type in seg_def Excel file ("20sec", "manual", "file")
         # set flap deflection in seg_def Excel file
         if os.getlogin() == 'joeac':
@@ -991,23 +987,31 @@ if __name__ == '__main__':
         file_path_msr_pts = os.path.join(ref_dat_path, 'Messpunkte Demonstrator_Mue13-33.xlsx')
         pickle_path_msr_pts = os.path.join(ref_dat_path, 'Messpunkte Demonstrator.p')
         cp_path_wall_correction = os.path.join(ref_dat_path, 'mue13-33-le15-tgap0_14.cp')
+        # alpha sensor offset
+        alpha_sens_offset = 214.73876953125
     elif airfoil == "B200":
         l_ref = 0.5
-        seg_def_files = ["T006_R011.xlsx"]
+        # specifiy, if drive data should be synchronized
+        sync_drive = False
+        seg_def_files = ["T012.xlsx"]
         digitized_LWK_polar_files_clcd = []
         digitized_LWK_polar_files_clalpha = []
-        WDIR = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/B200/2023_09_26/T6_R011"
+        XFOIL_polar_files = ["B200-0_reinit_Re11e5_XFOILSUC.pol"]
+        #WDIR = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/B200/2023_09_26/T6_R011"
+        WDIR = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/B200/2023_08_03/R003_20deg_clmax"
         segments_def_dir = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/B200/Testsegments_specification"
         digitized_LWK_polar_dir = ""
         ref_dat_path = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/B200/01_Reference Data/"
         prandtl_data = {"unit name static": "static_K04", "i_sens_static": 31,
-                        "unit name total": "ptot_rake", "i_sens_total": 3}
-        # "unit name total": "static_K04", "i_sens_total": 32}
+                        #"unit name total": "ptot_rake", "i_sens_total": 3}
+                        "unit name total": "static_K04", "i_sens_total": 32}
 
         foil_coord_path = os.path.join(ref_dat_path, "B200-0_reinitialized.dat")
         file_path_msr_pts = os.path.join('C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/03_Static pressure measurement system/Messpunkte Demonstrator/Messpunkte Demonstrator.xlsx')
         pickle_path_msr_pts = os.path.join(ref_dat_path, 'Messpunkte Demonstrator.p')
         cp_path_wall_correction = os.path.join(ref_dat_path, 'B200-0_reinitialized.cp')
+        # alpha sensor offset
+        alpha_sens_offset = 162.88330078125
 
     #******************************************************************************************************************
     #******************************************************************************************************************
@@ -1052,17 +1056,17 @@ if __name__ == '__main__':
         # read segment times
         df_segments = pd.read_excel(segments_def_path, skiprows=1, usecols="A:H").ffill(axis=0)
         df_segments[["hh", "mm", "ss", "hh.1", "mm.1", "ss.1"]] = df_segments[["hh", "mm", "ss", "hh.1", "mm.1", "ss.1"]].astype(int)
-        local_timezone = tzlocal.get_localzone_name()
+
         df_segments['start'] = pd.to_datetime(df_segments['dd'].astype(str) + ' ' +
                                               df_segments['hh'].astype(str) + ':' +
                                               df_segments['mm'].astype(str) + ':' +
                                               df_segments['ss'].astype(str),
-                                              errors='coerce', utc=False).dt.tz_localize(local_timezone, ambiguous='NaT', nonexistent='shift_forward')
+                                              errors='coerce', utc=True)
         df_segments['end'] = pd.to_datetime(df_segments['dd.1'].astype(str) + ' ' +
                                             df_segments['hh.1'].astype(str) + ':' +
                                             df_segments['mm.1'].astype(str) + ':' +
                                             df_segments['ss.1'].astype(str),
-                                            errors='coerce', utc=False).dt.tz_localize(local_timezone, ambiguous='NaT', nonexistent='shift_forward')
+                                            errors='coerce', utc=True)
 
         df_segments = df_segments[['start', 'end']]
 
@@ -1077,9 +1081,9 @@ if __name__ == '__main__':
 
         for i, filename in enumerate(raw_data_filenames):
             calibration_type = calibration_types[i]
-            if calibration_type not in ["file"," 20sec"]:
+            if calibration_type not in ["file", "20sec"]:
                 calibration_filename = calibration_type
-                calibration_type= "manual"
+                calibration_type = "manual"
 
             file_path_drive = os.path.join(WDIR, f"{filename}_drive.dat")
             file_path_AOA = os.path.join(WDIR, f"{filename}_AOA.dat")
@@ -1093,8 +1097,9 @@ if __name__ == '__main__':
 
             # read sensor data
             GPS = read_GPS(file_path_GPS)
-            drive = read_drive(file_path_drive, t0=GPS["Time"].iloc[0])
-            alphas = read_AOA_file(file_path_AOA, sigma_wall, t0=GPS["Time"].iloc[0])
+            if sync_drive:
+                drive = read_drive(file_path_drive, t0=GPS["Time"].iloc[0])
+            alphas = read_AOA_file(file_path_AOA, sigma_wall, t0=GPS["Time"].iloc[0], alpha_sens_offset=alpha_sens_offset)
             pstat_K02 = read_DLR_pressure_scanner_file(file_path_pstat_K02, n_sens=32, t0=GPS["Time"].iloc[0])
             pstat_K03 = read_DLR_pressure_scanner_file(file_path_pstat_K03, n_sens=32, t0=GPS["Time"].iloc[0])
             pstat_K04 = read_DLR_pressure_scanner_file(file_path_pstat_K04, n_sens=32, t0=GPS["Time"].iloc[0])
@@ -1102,8 +1107,11 @@ if __name__ == '__main__':
             pstat_rake = read_DLR_pressure_scanner_file(file_path_pstat_rake, n_sens=5, t0=GPS["Time"].iloc[0])
 
             # synchronize sensor data
-            df_sync = synchronize_data([pstat_K02, pstat_K03, pstat_K04, ptot_rake, pstat_rake, alphas])
-
+            if sync_drive:
+                sync_data = [pstat_K02, pstat_K03, pstat_K04, ptot_rake, pstat_rake, alphas, drive]
+            else:
+                sync_data = [pstat_K02, pstat_K03, pstat_K04, ptot_rake, pstat_rake, alphas]
+            df_sync = synchronize_data(sync_data)
 
             if calibration_type == "file":
                 # apply calibration offset from calibration file
@@ -1136,7 +1144,7 @@ if __name__ == '__main__':
         df_sync = calc_cd(df_sync, l_ref, lambda_wall, sigma_wall, xi_wall)
 
         # visualisation
-        plot_specify_segment(df_sync, df_p_abs, df_segments, U_cutoff, i_seg_plot=i_seg_plot)
+        plot_time_series(df_sync, df_p_abs, df_segments, U_cutoff, plot_drive=sync_drive, i_seg_plot=i_seg_plot)
         #plot_3D(df_sync_cp)
         plot_cp_x_and_wake(df_sync, df_airfoil, airfoil, sens_ident_cols, df_segments, i_seg_plot) # df_sync_cp.index.get_loc(pd.Timestamp('2024-06-13 23:38:00'))
 
@@ -1157,6 +1165,13 @@ if __name__ == '__main__':
     for (path_clcd, path_clalpha), eta_flap in zip(digitized_LWK_polar_paths, list_of_eta_flaps):
         polarsStu.append(at.PolarTool(name="LWK Stuttgart", Re=Re_mean, flapangle=eta_flap))
         polarsStu[-1].read_getDataGraphDigitizerPolar(path_clcd, path_clalpha)
+
+    # read XFOIL polars
+    XFOIL_polars = list()
+    for XFOIL_polar_file in XFOIL_polar_files:
+        XFOIL_polars.append(at.PolarTool(name="XFOILSUC-mod", flapangle=eta_flap))
+        XFOIL_polars[-1].ImportXFoilPolar(os.path.join(ref_dat_path, XFOIL_polar_file))
+        XFOIL_polars[-1].name = "XFOILSUC-mod"
 
     PPAX = dict()
     PPAX['CLmin'] = 0.0
@@ -1210,11 +1225,21 @@ if __name__ == '__main__':
     LineAppearance['marker'].append('x')
 
     altsort_polars = []
-    for a, b in itertools.zip_longest(list_of_polars, polarsStu):
+    i_line = 0
+    for a, b, c in itertools.zip_longest(list_of_polars, polarsStu, XFOIL_polars):
         if a:
             altsort_polars.append(a)
+            i_line += 1
         if b:
             altsort_polars.append(b)
+            i_line += 1
+        if c:
+            altsort_polars.append(c)
+            # do not show marker for XFOIL polars (makes plot unreadable due to tight operation point spacing)
+            LineAppearance['marker'][i_line] = "None"
+            i_line += 1
+
+
 
     altsort_polars[0].plotPolar(additionalPolars=altsort_polars[1:], PPAX=PPAX, Colorplot=True, LineAppearance=LineAppearance)
 
