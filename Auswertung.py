@@ -588,7 +588,7 @@ def calc_wall_correction_coefficients(df_airfoil, filepath, l_ref):
     xi_wall_corr = -0.00335 * l_ref**2
 
     return lambda_wall_corr, sigma_wall_corr, xi_wall_corr
-def plot_specify_section(df_cp, df_p_abs, df_segments, U_cutoff=10, unit_sens_pstat="static_K04_31"):
+def plot_specify_segment(df_cp, df_p_abs, df_segments, U_cutoff=10, plot_pstat=False, unit_sens_pstat="static_K04_31", i_seg_plot=None):
     """
 
     :param df_sync:
@@ -604,7 +604,11 @@ def plot_specify_section(df_cp, df_p_abs, df_segments, U_cutoff=10, unit_sens_ps
     ax.xaxis.set_major_formatter(DateFormatter("%M:%S"))
     ax.grid()
     for index, row in df_segments.iterrows():
-        ax.axvspan(row['start'], row['end'], color='lightgray', alpha=0.5)
+        if index == i_seg_plot:
+            color = "green"
+        else:
+            color = 'lightgray'
+        ax.axvspan(row['start'], row['end'], color=color, alpha=0.5)
 
     # plot alpha, cl, cm, cmr over time
     fig, host = plt.subplots()
@@ -612,12 +616,14 @@ def plot_specify_section(df_cp, df_p_abs, df_segments, U_cutoff=10, unit_sens_ps
     ax1 = host.twinx()
     ax2 = host.twinx()
     ax3 = host.twinx()
-    ax4 = host.twinx()
+    if plot_pstat:
+        ax4 = host.twinx()
     # Offset the right twin axes so they don't overlap
     ax1.spines['right'].set_position(('outward', 120))
     ax2.spines['right'].set_position(('outward', 60))
     ax3.spines['right'].set_position(('outward', 0))
-    ax4.spines['right'].set_position(('outward', 180))
+    if plot_pstat:
+        ax4.spines['right'].set_position(('outward', 180))
 
     # filter data
     window = 201
@@ -637,10 +643,15 @@ def plot_specify_section(df_cp, df_p_abs, df_segments, U_cutoff=10, unit_sens_ps
     line = ax3.plot(df_cp.loc[df_cp["U_CAS"] > U_cutoff].index, df_cp.loc[df_cp["U_CAS"] > U_cutoff, "cd"], color="red", label="$c_d$", zorder=1, alpha=0.35)
     ax3.plot(df_cp.loc[df_cp["U_CAS"] > U_cutoff].index, cd_filt, color=line[0].get_color())
     ax3.set_ylim([0., cd_filt.max()])
-    line = ax4.plot(df_p_abs.index, df_p_abs[unit_sens_pstat], color="green", label="$p_{stat}$", zorder=1, alpha=0.35)
-    ax4.plot(df_p_abs.index, p_stat_filt, color=line[0].get_color())
+    if plot_pstat:
+        line = ax4.plot(df_p_abs.index, df_p_abs[unit_sens_pstat], color="green", label="$p_{stat}$", zorder=1, alpha=0.35)
+        ax4.plot(df_p_abs.index, p_stat_filt, color=line[0].get_color())
     for index, row in df_segments.iterrows():
-        host.axvspan(row['start'], row['end'], color='lightgray', alpha=0.5)
+        if index == i_seg_plot:
+            color = "green"
+        else:
+            color = 'lightgray'
+        host.axvspan(row['start'], row['end'], color=color, alpha=0.5)
 
     # Formatting the x-axis to show minutes and seconds
     host.xaxis.set_major_formatter(DateFormatter("%M:%S"))
@@ -651,12 +662,16 @@ def plot_specify_section(df_cp, df_p_abs, df_segments, U_cutoff=10, unit_sens_ps
     host.set_ylabel("$c_l$")
     ax2.set_ylabel("$Re$")
     ax3.set_ylabel("$c_d$")
-    ax4.set_ylabel("$p_{stat}~\mathrm{[Pa]}$")
+    if plot_pstat:
+        ax4.set_ylabel("$p_{stat}~\mathrm{[Pa]}$")
     # Enabling grid on host
     host.grid()
     # Adding legends from all axes
     lines, labels = [], []
-    for ax in [host, ax1, ax2, ax3, ax4]:
+    axes = [host, ax1, ax2, ax3]
+    if plot_pstat:
+        axes.append(ax4)
+    for ax in axes:
         line, label = ax.get_legend_handles_labels()
         lines.extend(line)
         labels.extend(label)
@@ -685,7 +700,7 @@ def plot_specify_section(df_cp, df_p_abs, df_segments, U_cutoff=10, unit_sens_ps
     ax6.grid()"""
 
     return
-def plot_operating_points(df, df_airfoil, at_airfoil, sens_ident_cols, t_start, t_end):
+def plot_operating_points(df, df_airfoil, at_airfoil, sens_ident_cols, df_segments, i_seg):
     """
     plots cp(x) and wake depression (x) at certain operating points (alpha, Re and beta)
     :param df:      pandas dataframe with index time and data to be plotted
@@ -694,6 +709,9 @@ def plot_operating_points(df, df_airfoil, at_airfoil, sens_ident_cols, t_start, 
     """
     h_stat = 100
     h_tot = 93
+
+    t_start = np.abs(df_sync.index-df_segments.loc[i_seg, "start"]).argmin()
+    t_end = np.abs(df_sync.index-df_segments.loc[i_seg, "end"]).argmin()
 
     # plot cp(x)
     fig, ax = plt.subplots()
@@ -723,20 +741,15 @@ def plot_operating_points(df, df_airfoil, at_airfoil, sens_ident_cols, t_start, 
     cols = cols.iloc[:,1:]
 
     # positions of total pressure sensors of wake rake
-    z_tot = np.linspace(-h_tot / 2, h_tot / 2, 32, endpoint=True)
-    # bring it to similar dimensions of airfoil
-    z_tot = z_tot / 100;
+    z_tot = np.linspace(h_tot / 2, -h_tot / 2, 32, endpoint=True);
     # it is assumed, that 0th sensor is defective (omit that value)
     z_tot = z_tot[1:]
 
-    # for better appearance, move airfoil to wake depression
-    #df_airfoil_y_corr = df_airfoil["y"] + 0.2
-    df_airfoil_y_corr = at_airfoil.coords[:, 1]+0
+
 
     fig, ax = plt.subplots()
     ax_cp = ax.twiny()
-    ax.plot(at_airfoil.coords[:, 0], -df_airfoil_y_corr, "k-")
-    #ax.plot(df_airfoil["x"], df_airfoil["y"], "k.")
+    ax.plot(at_airfoil.coords[:, 0]*100, at_airfoil.coords[:, 1]*100, "k-")
     ax_cp.plot(cols.iloc[t_start:t_end].mean(), z_tot, "r.-")
     # Calculate mean and standard deviation over the specified time interval
     mean_ptot_values = cols.iloc[t_start:t_end].mean()
@@ -746,16 +759,13 @@ def plot_operating_points(df, df_airfoil, at_airfoil, sens_ident_cols, t_start, 
     ylim_u, ylim_l = ax_cp.get_ylim()
     ax_cp.set_ylim([ylim_l, ylim_u])
     ax.set_xlabel("$x$")
-    ax.set_ylabel("$y$")
+    ax.set_ylabel("$z$")
     ax_cp.set_xlabel("$c_p$")
     ax.set_title("Wake Depression")
     ax_cp.grid()
     ax.axis("equal")
 
-
-
-
-    return 1
+    return
 def plot_3D(df):
     """
 
@@ -790,7 +800,7 @@ def plot_3D(df):
     # Show the plot
 
 
-    return 1
+    return
 def calc_mean(df, alpha, Re):
 
     """calculates mean values of AOA, lift-, drag- and moment coefficients for a given alpha (automativally given from
@@ -896,7 +906,7 @@ def plot_polars(df):
 
 
 
-    return 1
+    return
 def settling_time_average(df):
     '''
     visualizes the running average over time in order to analyze if the sweep time is sufficient or not
@@ -941,7 +951,7 @@ def settling_time_average(df):
     plt.grid(True)
 
 
-    return 1
+    return
 
 
 if __name__ == '__main__':
@@ -949,20 +959,22 @@ if __name__ == '__main__':
     T_air = 288
     # Lower cutoff speed for plots
     U_cutoff = 10
+    # specify test segment, which should be plotted
+    i_seg_plot = 10
 
-    #airfoil = "Mü13-33"
-    airfoil = "B200"
+    airfoil = "Mü13-33"
+    #airfoil = "B200"
     # constants and input data
     if airfoil == "Mü13-33":
         l_ref = 0.7
         # Raw data file prefix
-        seg_def_files = ["T007.xlsx"]
-        digitized_LWK_polar_files_clcd = ["Re1e6_beta0_cl-cd.txt"]
-        digitized_LWK_polar_files_clalpha = ["Re1e6_beta0_cl-alpha.txt"]
+        seg_def_files = ["T025_untrimmed.xlsx"]
+        digitized_LWK_polar_files_clcd = ["Re8e5_beta15_cl-cd.txt"]
+        digitized_LWK_polar_files_clalpha = ["Re8e5_beta15_cl-alpha.txt"]
         # set calibration type in seg_def Excel file ("20sec", "manual", "file")
         # set flap deflection in seg_def Excel file
         if os.getlogin() == 'joeac':
-            WDIR = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/Mü13-33/2024-06-13/T002_T009"
+            WDIR = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/Mü13-33/2024-06-18"
             segments_def_dir = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/Mü13-33/testsegments_specification"
             digitized_LWK_polar_dir = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/Mü13-33/Digitized data Döller LWK/"
             ref_dat_path = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/Mü13-33/01_Reference Data/"
@@ -972,8 +984,8 @@ if __name__ == '__main__':
             digitized_LWK_polar_dir = "D:/Python_Codes/Rohdateien/digitized_polars_doeller"
             ref_dat_path = "D:/Python_Codes/Workingdirectory_Auswertung/"
         prandtl_data = {"unit name static": "static_K04", "i_sens_static": 31,
-                        "unit name total": "ptot_rake", "i_sens_total": 3}
-                        #"unit name total": "static_K04", "i_sens_total": 32}
+                        #"unit name total": "ptot_rake", "i_sens_total": 3}
+                        "unit name total": "static_K04", "i_sens_total": 32}
 
         foil_coord_path = os.path.join(ref_dat_path, "mue13-33-le15.dat")
         file_path_msr_pts = os.path.join(ref_dat_path, 'Messpunkte Demonstrator_Mue13-33.xlsx')
@@ -1122,9 +1134,9 @@ if __name__ == '__main__':
         df_sync = calc_cd(df_sync, l_ref, lambda_wall, sigma_wall, xi_wall)
 
         # visualisation
-        plot_specify_section(df_sync, df_p_abs, df_segments, U_cutoff)
+        plot_specify_segment(df_sync, df_p_abs, df_segments, U_cutoff, i_seg_plot=i_seg_plot)
         #plot_3D(df_sync_cp)
-        plot_operating_points(df_sync, df_airfoil, airfoil, sens_ident_cols, t_start=87533, t_end=87633) # df_sync_cp.index.get_loc(pd.Timestamp('2024-06-13 23:38:00'))
+        plot_operating_points(df_sync, df_airfoil, airfoil, sens_ident_cols, df_segments, i_seg_plot) # df_sync_cp.index.get_loc(pd.Timestamp('2024-06-13 23:38:00'))
 
 
         df_polar = prepare_polar_df(df_sync, df_segments)
