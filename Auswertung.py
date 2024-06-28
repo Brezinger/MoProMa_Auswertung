@@ -700,7 +700,7 @@ def plot_specify_segment(df_cp, df_p_abs, df_segments, U_cutoff=10, plot_pstat=F
     ax6.grid()"""
 
     return
-def plot_operating_points(df, df_airfoil, at_airfoil, sens_ident_cols, df_segments, i_seg):
+def plot_cp_x_and_wake(df, df_airfoil, at_airfoil, sens_ident_cols, df_segments, i_seg):
     """
     plots cp(x) and wake depression (x) at certain operating points (alpha, Re and beta)
     :param df:      pandas dataframe with index time and data to be plotted
@@ -738,10 +738,10 @@ def plot_operating_points(df, df_airfoil, at_airfoil, sens_ident_cols, df_segmen
     cols = df.columns.to_list()
     cols = df.filter(regex='^ptot')
     # it is assumed, that 0th sensor is defective (omit that value)
-    cols = cols.iloc[:,1:]
+    cols = cols.iloc[:, 1:]
 
     # positions of total pressure sensors of wake rake
-    z_tot = np.linspace(h_tot / 2, -h_tot / 2, 32, endpoint=True);
+    z_tot = np.linspace(-h_tot / 2, h_tot / 2, 32, endpoint=True);
     # it is assumed, that 0th sensor is defective (omit that value)
     z_tot = z_tot[1:]
 
@@ -756,7 +756,7 @@ def plot_operating_points(df, df_airfoil, at_airfoil, sens_ident_cols, df_segmen
     std_ptot_values = cols.iloc[t_start:t_end].std()
     # Plot the mean ptot values with error bars
     ax_cp.errorbar(mean_ptot_values, z_tot, xerr=std_ptot_values, fmt='r.-', ecolor='gray', elinewidth=1, capsize=2)
-    ylim_u, ylim_l = ax_cp.get_ylim()
+    ylim_l, ylim_u = ax_cp.get_ylim()
     ax_cp.set_ylim([ylim_l, ylim_u])
     ax.set_xlabel("$x$")
     ax.set_ylabel("$z$")
@@ -960,7 +960,7 @@ if __name__ == '__main__':
     # Lower cutoff speed for plots
     U_cutoff = 10
     # specify test segment, which should be plotted
-    i_seg_plot = 10
+    i_seg_plot = 5
 
     airfoil = "Mü13-33"
     #airfoil = "B200"
@@ -984,8 +984,8 @@ if __name__ == '__main__':
             digitized_LWK_polar_dir = "D:/Python_Codes/Rohdateien/digitized_polars_doeller"
             ref_dat_path = "D:/Python_Codes/Workingdirectory_Auswertung/"
         prandtl_data = {"unit name static": "static_K04", "i_sens_static": 31,
-                        #"unit name total": "ptot_rake", "i_sens_total": 3}
-                        "unit name total": "static_K04", "i_sens_total": 32}
+                        "unit name total": "ptot_rake", "i_sens_total": 3}
+                        #"unit name total": "static_K04", "i_sens_total": 32}
 
         foil_coord_path = os.path.join(ref_dat_path, "mue13-33-le15.dat")
         file_path_msr_pts = os.path.join(ref_dat_path, 'Messpunkte Demonstrator_Mue13-33.xlsx')
@@ -1136,7 +1136,7 @@ if __name__ == '__main__':
         # visualisation
         plot_specify_segment(df_sync, df_p_abs, df_segments, U_cutoff, i_seg_plot=i_seg_plot)
         #plot_3D(df_sync_cp)
-        plot_operating_points(df_sync, df_airfoil, airfoil, sens_ident_cols, df_segments, i_seg_plot) # df_sync_cp.index.get_loc(pd.Timestamp('2024-06-13 23:38:00'))
+        plot_cp_x_and_wake(df_sync, df_airfoil, airfoil, sens_ident_cols, df_segments, i_seg_plot) # df_sync_cp.index.get_loc(pd.Timestamp('2024-06-13 23:38:00'))
 
 
         df_polar = prepare_polar_df(df_sync, df_segments)
