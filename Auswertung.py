@@ -219,7 +219,7 @@ def synchronize_data(merge_dfs_list):
     merged_df.index = merged_df.index.tz_localize("UTC")
 
     return merged_df
-def read_airfoil_geometry(filename, c, foil_source, eta_flap, pickle_file=""):
+def read_airfoil_geometry(filename, c, foil_source, eta_TE_flap, eta_LE_flap, flap_pivots, pickle_file=""):
     """
     --> searchs for pickle file in WD, if not found it creates a new pickle file
     --> generates pandas DataFrame with assignment of sensor unit + port to measuring point from Excel and renames
@@ -233,7 +233,7 @@ def read_airfoil_geometry(filename, c, foil_source, eta_flap, pickle_file=""):
     :param filename:            file name of Excel eg. "Messpunkte Demonstrator.xlsx".
     :param c:                   airfoil chord length
     :param foil_source:         string, path of airfoil coordinate file
-    :param eta_flap:            flap deflection angle
+    :param eta_TE_flap:            flap deflection angle
     :param pickle_file:         path to pickle file with airfoil information
     :return df_airfoil:         DataFrame with info described above
     """
@@ -243,12 +243,14 @@ def read_airfoil_geometry(filename, c, foil_source, eta_flap, pickle_file=""):
 
     if os.path.exists(pickle_file):
         with open(pickle_file, 'rb') as file:
-            df, eta_flap_read = pickle.load(file)
+            df, foil, eta_LE_flap_read, eta_TE_flap_read = pickle.load(file)
 
-    if not os.path.exists(pickle_file) or eta_flap_read != eta_flap:
+    if not os.path.exists(pickle_file) or eta_LE_flap_read != eta_LE_flap or eta_TE_flap_read != eta_TE_flap:
 
-        if eta_flap != 0.0:
-            foil.flap(xFlap=0.8, yFlap=0, etaFlap=eta_flap)
+        if eta_TE_flap != 0.0:
+            foil.flap(xFlap=flap_pivots[1, 0], yFlap=flap_pivots[1, 1], etaFlap=eta_TE_flap)
+        if eta_LE_flap != 0.0:
+            foil.LEflap(xFlap=flap_pivots[0, 0], yFlap=flap_pivots[0, 1], etaFlap=eta_LE_flap)
 
         # Read Excel file
         df = pd.read_excel(filename, usecols="A:F", skiprows=1, skipfooter=1)# Read the Excel file
@@ -284,7 +286,7 @@ def read_airfoil_geometry(filename, c, foil_source, eta_flap, pickle_file=""):
 
         if pickle_file != "":
             with open(pickle_file, 'wb') as file:
-                pickle.dump([df, eta_flap], file)
+                pickle.dump([df, foil, eta_LE_flap, eta_TE_flap], file)
 
     return df, foil
 def calc_airspeed_wind(df, prandtl_data, T, l_ref):
@@ -953,13 +955,15 @@ if __name__ == '__main__':
     # Lower cutoff speed for plots
     U_cutoff = 10
     # specify test segment, which should be plotted
-    i_seg_plot = 0
+    i_seg_plot = 3
 
     #airfoil = "Mü13-33"
     airfoil = "B200"
     # constants and input data
     if airfoil == "Mü13-33":
         l_ref = 0.7
+        flap_pivots = np.array([[0.2, 0.0], [0.8, 0.0]])
+        eta_LE_flap = 0.0
         # specifiy, if drive data should be synchronized
         sync_drive = False
         # Raw data file prefix
@@ -991,20 +995,22 @@ if __name__ == '__main__':
         alpha_sens_offset = 214.73876953125
     elif airfoil == "B200":
         l_ref = 0.5
+        flap_pivots = np.array([[0.325, 0.0], [0.87, -0.004]])
         # specifiy, if drive data should be synchronized
         sync_drive = False
         seg_def_files = ["T012.xlsx"]
         digitized_LWK_polar_files_clcd = []
         digitized_LWK_polar_files_clalpha = []
-        XFOIL_polar_files = ["B200-0_reinit_Re11e5_XFOILSUC.pol"]
+        #XFOIL_polar_files = ["B200-0_reinit_Re11e5_XFOILSUC.pol"]
+        XFOIL_polar_files = ["B200-1_reinit_Re1e6_XFOIL_HLIDP.pol", "B200-1_reinit_Re1e6_XFOIL_HLIDP_xtr0_325.pol"]
         #WDIR = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/B200/2023_09_26/T6_R011"
         WDIR = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/B200/2023_08_03/R003_20deg_clmax"
         segments_def_dir = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/B200/Testsegments_specification"
         digitized_LWK_polar_dir = ""
         ref_dat_path = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/B200/01_Reference Data/"
         prandtl_data = {"unit name static": "static_K04", "i_sens_static": 31,
-                        #"unit name total": "ptot_rake", "i_sens_total": 3}
-                        "unit name total": "static_K04", "i_sens_total": 32}
+                        "unit name total": "ptot_rake", "i_sens_total": 3}
+                        #"unit name total": "static_K04", "i_sens_total": 32}
 
         foil_coord_path = os.path.join(ref_dat_path, "B200-0_reinitialized.dat")
         file_path_msr_pts = os.path.join('C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/03_Static pressure measurement system/Messpunkte Demonstrator/Messpunkte Demonstrator.xlsx')
@@ -1030,15 +1036,12 @@ if __name__ == '__main__':
     list_of_polars = []
     list_of_eta_flaps = []
 
-    for seg_def_file in seg_def_files:
+    for i_file, seg_def_file in enumerate(seg_def_files):
 
         digitized_LWK_polar_paths = []
         for i in range(len(digitized_LWK_polar_files_clcd)):
             digitized_LWK_polar_paths.append([os.path.join(digitized_LWK_polar_dir, digitized_LWK_polar_files_clcd[i]),
                                               os.path.join(digitized_LWK_polar_dir, digitized_LWK_polar_files_clalpha[i])])
-
-
-        flap_pivots = np.array([[0.2, 0.0], [0.8, 0.0]]) # LEF and TEF
 
         # get segments filenames
         segments_def_path = os.path.join(segments_def_dir, seg_def_file)
@@ -1049,10 +1052,13 @@ if __name__ == '__main__':
             "str").flatten()
         calibration_types = pd.read_excel(segments_def_path, skiprows=0, usecols="K").dropna().values.astype(
             "str").flatten()
-        eta_flap = pd.read_excel(segments_def_path, skiprows=0, usecols="L").dropna().values.astype(
+        eta_TE_flap = pd.read_excel(segments_def_path, skiprows=0, usecols="L").dropna().values.astype(
             "float").flatten()
-        eta_flap = eta_flap[0]
-        list_of_eta_flaps.append(eta_flap)
+        eta_LE_flap = pd.read_excel(segments_def_path, skiprows=0, usecols="M").dropna().values.astype(
+            "float").flatten()
+        eta_TE_flap = eta_TE_flap[i_file]
+        eta_LE_flap = eta_LE_flap[i_file]
+        list_of_eta_flaps.append(eta_TE_flap)
         # read segment times
         df_segments = pd.read_excel(segments_def_path, skiprows=1, usecols="A:H").ffill(axis=0)
         df_segments[["hh", "mm", "ss", "hh.1", "mm.1", "ss.1"]] = df_segments[["hh", "mm", "ss", "hh.1", "mm.1", "ss.1"]].astype(int)
@@ -1071,8 +1077,9 @@ if __name__ == '__main__':
         df_segments = df_segments[['start', 'end']]
 
         # read airfoil data
-        df_airfoil, airfoil = read_airfoil_geometry(file_path_msr_pts, c=l_ref, foil_source=foil_coord_path, eta_flap=eta_flap,
-                                                    pickle_file=pickle_path_msr_pts)
+        df_airfoil, airfoil = read_airfoil_geometry(file_path_msr_pts, c=l_ref, foil_source=foil_coord_path,
+                                                    eta_LE_flap=eta_LE_flap, eta_TE_flap=eta_TE_flap,
+                                                    flap_pivots=flap_pivots, pickle_file=pickle_path_msr_pts)
         # calculate wall correction coefficients
         lambda_wall, sigma_wall, xi_wall = calc_wall_correction_coefficients(df_airfoil, cp_path_wall_correction, l_ref)
 
@@ -1155,21 +1162,21 @@ if __name__ == '__main__':
 
         # Generate PolarTool polar
         Re_mean = np.around(df_polar.loc[:25, "Re"].mean() / 1e5)*1e5
-        polar = at.PolarTool(name="Automobile wind tunnel", Re=Re_mean, flapangle=eta_flap, WindtunnelName="MoProMa-Car")
+        polar = at.PolarTool(name="Automobile wind tunnel", Re=Re_mean, flapangle=eta_TE_flap, WindtunnelName="MoProMa-Car")
         polar.parseMoProMa_Polar(df_polar)
         list_of_polars.append(polar)
 
 
     # read measured polar from LWK Stuttgart, digitized with getData graph digitizer
     polarsStu = list()
-    for (path_clcd, path_clalpha), eta_flap in zip(digitized_LWK_polar_paths, list_of_eta_flaps):
-        polarsStu.append(at.PolarTool(name="LWK Stuttgart", Re=Re_mean, flapangle=eta_flap))
+    for (path_clcd, path_clalpha), eta_TE_flap in zip(digitized_LWK_polar_paths, list_of_eta_flaps):
+        polarsStu.append(at.PolarTool(name="LWK Stuttgart", Re=Re_mean, flapangle=eta_TE_flap))
         polarsStu[-1].read_getDataGraphDigitizerPolar(path_clcd, path_clalpha)
 
     # read XFOIL polars
     XFOIL_polars = list()
     for XFOIL_polar_file in XFOIL_polar_files:
-        XFOIL_polars.append(at.PolarTool(name="XFOILSUC-mod", flapangle=eta_flap))
+        XFOIL_polars.append(at.PolarTool(name="XFOILSUC-mod", flapangle=eta_TE_flap))
         XFOIL_polars[-1].ImportXFoilPolar(os.path.join(ref_dat_path, XFOIL_polar_file))
         XFOIL_polars[-1].name = "XFOILSUC-mod"
 
@@ -1194,9 +1201,9 @@ if __name__ == '__main__':
     LineAppearance['marker'] = []
     # R G B
     LineAppearance['color'].append((255. / 255., 68. / 255., 68. / 255.))  # red
-    LineAppearance['color'].append("k")
+    #LineAppearance['color'].append("k")
     LineAppearance['color'].append((255. / 255., 165. / 255., 0. / 255.))  # orange
-    LineAppearance['color'].append("k")
+    #LineAppearance['color'].append("k")
     LineAppearance['color'].append((255. / 255., 255. / 255., 68. / 255.))  # yellow
     LineAppearance['color'].append("k")
     LineAppearance['color'].append((68. / 255., 255. / 255., 68. / 255.))  # green
@@ -1237,6 +1244,7 @@ if __name__ == '__main__':
             altsort_polars.append(c)
             # do not show marker for XFOIL polars (makes plot unreadable due to tight operation point spacing)
             LineAppearance['marker'][i_line] = "None"
+            LineAppearance['linestyle'][i_line] = "-"
             i_line += 1
 
 
