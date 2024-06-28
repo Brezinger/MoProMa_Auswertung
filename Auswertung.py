@@ -409,9 +409,11 @@ def calc_cl_cm_cdp(df, df_airfoil, at_airfoil, flap_pivots=[], lambda_wall=0., s
     s_taps = df_airfoil['s']
 
     # calculate hinge moment
+
     r_ref = np.tile(np.array([0.25, 0]), [len(df_airfoil.index), 1]) - df_airfoil[['x', 'y']].to_numpy()
     df.loc[:, "cm"] = -integrate.simpson(cp * np.tile(np.cross(n_taps, r_ref), [len(df.index), 1]),
                                   x=s_taps)
+
 
     # calculate hinge moment of trailing edge flap
     n_flaps = len(flap_pivots)
@@ -606,15 +608,15 @@ def plot_specify_section(df, df_segments, U_cutoff=15):
     for index, row in df_segments.iterrows():
         ax.axvspan(row['start'], row['end'], color='lightgray', alpha=0.5)
 
-    # plot alpha, cl, cm, cmr over time
+    # plot alpha, cl over time
     fig3, host = plt.subplots()
     # Create twin axes on the right side of the host axis
     ax3 = host.twinx()
     ax4 = host.twinx()
     ax5 = host.twinx()
     # Offset the right twin axes so they don't overlap
-    ax3.spines['right'].set_position(('outward', 120))
-    ax4.spines['right'].set_position(('outward', 60))
+    ax3.spines['right'].set_position(('outward', 80))
+    ax4.spines['right'].set_position(('outward', 40))
     ax5.spines['right'].set_position(('outward', 0))
 
     # filter data
@@ -638,7 +640,7 @@ def plot_specify_section(df, df_segments, U_cutoff=15):
         host.axvspan(row['start'], row['end'], color='lightgray', alpha=0.5)
 
     # Formatting the x-axis to show minutes and seconds
-    host.xaxis.set_major_formatter(DateFormatter("%M:%S"))
+    host.xaxis.set_major_formatter(DateFormatter("%H:%M:%S"))
     #host.xaxis.set_major_formatter(ticker.FormatStrFormatter('%0.1f'))
     # Setting labels
     host.set_xlabel("$Time[mm:ss]$")
@@ -834,7 +836,7 @@ def prepare_polar_df(df_sync, df_segments):
     :return: df_polars            df with polar values ready to be plotted
     """
     # create a new dataframe with specified column names
-    cols = ["alpha", "Re", "U_CAS", "U_TAS", "cl", "cd", "cdp", "cm", "cmr_LE", "cmr_TE"]
+    cols = ["alpha", "Re", "U_CAS", "U_TAS", "cl","cm", "cd", "cdp", "cmr_LE", "cmr_TE"]
     data = []
     for i in range(len(df_segments.index)):
         start_time = df_segments.loc[i, "start"]
@@ -949,9 +951,9 @@ if __name__ == '__main__':
     #******************************************************************************************************************
 
     # Raw data file prefix
-    seg_def_files = (["T010.xlsx"])
-    digitized_LWK_polar_files_clcd = (["Re1e6_beta0_cl-cd.txt"])
-    digitized_LWK_polar_files_clalpha = (["Re1e6_beta0_cl-alpha.txt"])
+    seg_def_files = (["T012.xlsx", "T022.xlsx", "T024.xlsx"])
+    digitized_LWK_polar_files_clcd = (["Re1.5e6_beta0_cl-cd.txt", "Re1.5e6_beta7.5_cl-cd.txt", "Re1.5e6_beta15_cl-cd.txt"])
+    digitized_LWK_polar_files_clalpha = (["Re1.5e6_beta0_cl-alpha.txt", "Re1.5e6_beta7.5_cl-alpha.txt", "Re1.5e6_beta15_cl-alpha.txt"])
     # set calibration type in seg_def Excel file ("20sec", "manual", "file")
     # set flap deflection in seg_def Excel file
 
@@ -960,6 +962,7 @@ if __name__ == '__main__':
 
     list_of_df_polars = ([])
     list_of_polars = []
+    list_of_eta_flaps = []
 
 
     for seg_def_file in seg_def_files:
@@ -1013,6 +1016,7 @@ if __name__ == '__main__':
         eta_flap = pd.read_excel(segments_def_path, skiprows=0, usecols="L").dropna().values.astype(
             "float").flatten()
         eta_flap = eta_flap[0]
+        list_of_eta_flaps.append(eta_flap)
         # read segment times
         df_segments = pd.read_excel(segments_def_path, skiprows=1, usecols="A:H").fillna(method='ffill', axis=0)
         local_timezone = tzlocal.get_localzone_name()
@@ -1097,6 +1101,8 @@ if __name__ == '__main__':
         # calculate drag coefficients
         df_sync = calc_cd(df_sync, l_ref, lambda_wall, sigma_wall, xi_wall)
 
+        #df_sync.index = df_sync.index + pd.DateOffset(hours=1)
+
         # visualisation
         plot_specify_section(df_sync, df_segments, U_cutoff)
         #plot_3D(df_sync)
@@ -1113,37 +1119,22 @@ if __name__ == '__main__':
         polar.parseMoProMa_Polar(df_polar)
         list_of_polars.append(polar)
 
-        """if len(digitized_LWK_polar_paths) == 1:
-            polarsStu = list()
-            for path_clcd, path_clalpha in digitized_LWK_polar_path:
-                polarsStu.append(at.PolarTool(name="LWK Stuttgart", Re=Re_mean, flapangle=eta_flap))
-                polarsStu[-1].read_getDataGraphDigitizerPolar(path_clcd, path_clalpha)
-        elif len(digitized_LWK_polar_paths) == 2:
-            path_clcd = 
 
-            polarsStu = list()
-            for path_clcd, path_clalpha in digitized_LWK_polar_path:
-                polarsStu.append(at.PolarTool(name="LWK Stuttgart", Re=Re_mean, flapangle=eta_flap))
-                polarsStu[-1].read_getDataGraphDigitizerPolar(path_clcd, path_clalpha)"""
-
-
-        # read measured polar from LWK Stuttgart, digitized with getData graph digitizer
-
-
+    # read measured polar from LWK Stuttgart, digitized with getData graph digitizer
     polarsStu = list()
-    for path_clcd, path_clalpha in digitized_LWK_polar_paths:
+    for (path_clcd, path_clalpha), eta_flap in zip(digitized_LWK_polar_paths, list_of_eta_flaps):
         polarsStu.append(at.PolarTool(name="LWK Stuttgart", Re=Re_mean, flapangle=eta_flap))
         polarsStu[-1].read_getDataGraphDigitizerPolar(path_clcd, path_clalpha)
 
     PPAX = dict()
     PPAX['CLmin'] = 0.0
-    PPAX['CLmax'] = 2.000
+    PPAX['CLmax'] = 1.800
     PPAX['CLdel'] = 0.5000
     PPAX['CDmin'] = 0.0000
-    PPAX['CDmax'] = 0.0250
+    PPAX['CDmax'] = 0.0220
     PPAX['CDdel'] = 0.0050
-    PPAX['ALmin'] = 0.0000
-    PPAX['ALmax'] = 25.0000
+    PPAX['ALmin'] = -8.0000
+    PPAX['ALmax'] = 20.0000
     PPAX['ALdel'] = 2.0000
     PPAX['CMmin'] = -0.2500
     PPAX['CMmax'] = 0.000
@@ -1158,20 +1149,21 @@ if __name__ == '__main__':
     LineAppearance['linestyle'] = []
     LineAppearance['marker'] = []
     # R G B
-    LineAppearance['color'].append((255. / 255., 68. / 255., 68. / 255.))  # red
+    LineAppearance['color'].append((68. / 255., 255. / 255., 68. / 255.))  # green
     LineAppearance['color'].append("k")
-    LineAppearance['color'].append((255. / 255., 165. / 255., 0. / 255.))  # orange
+    LineAppearance['color'].append((60. / 255., 155. / 255., 255. / 255.))  # light blue
+    LineAppearance['color'].append("k")
+    LineAppearance['color'].append((255. / 255., 68. / 255., 68. / 255.))  # red
     LineAppearance['color'].append("k")
     LineAppearance['color'].append((255. / 255., 255. / 255., 68. / 255.))  # yellow
     LineAppearance['color'].append("k")
     LineAppearance['color'].append((68. / 255., 255. / 255., 68. / 255.))  # green
     LineAppearance['color'].append((68. / 255., 255. / 255., 255. / 255.))  # turquoise
-    LineAppearance['color'].append((60. / 255., 155. / 255., 255. / 255.))  # light blue
     LineAppearance['color'].append((205. / 255., 55. / 255., 255. / 255.))  # purple
     LineAppearance['color'].append((255. / 255., 0. / 255., 255. / 255.))  # rose/purple
 
-    LineAppearance['linestyle'].append("-")
     LineAppearance['linestyle'].append("None")
+    LineAppearance['linestyle'].append("-")
     LineAppearance['linestyle'].append("None")
     LineAppearance['linestyle'].append("-")
     LineAppearance['linestyle'].append("None")
@@ -1184,7 +1176,6 @@ if __name__ == '__main__':
     LineAppearance['marker'].append("^")
     LineAppearance['marker'].append("s")
     LineAppearance['marker'].append("s")
-    LineAppearance['marker'].append('o')
     LineAppearance['marker'].append('o')
     LineAppearance['marker'].append('o')
     LineAppearance['marker'].append('x')
@@ -1202,4 +1193,6 @@ if __name__ == '__main__':
     #settling_time_average(df_sync)
 
     print("done")
+
+    #plt.savefig('polar_comparison_Re1e6.jpg', format='jpg', dpi=1000)
 
