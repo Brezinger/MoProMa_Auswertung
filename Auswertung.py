@@ -124,10 +124,11 @@ def read_drive(filename, t0):
     start_time_ms = t0.timestamp() * 1000
 
     # Calculate the time difference in milliseconds from the first row
-    time_diff_ms = df['Time'] - df['Time'].iloc[0]
+    if len(df.index) > 0:
+        time_diff_ms = df['Time'] - df['Time'].iloc[0]
 
-    # Add this difference to the start time (in milliseconds) and convert back to datetime
-    df['Time'] = pd.to_datetime(pd.Timestamp(start_time_ms, unit='ms') + time_diff_ms, unit='ms')
+        # Add this difference to the start time (in milliseconds) and convert back to datetime
+        df['Time'] = pd.to_datetime(pd.Timestamp(start_time_ms, unit='ms') + time_diff_ms, unit='ms')
 
     return df
 def read_DLR_pressure_scanner_file(filename, n_sens, t0):
@@ -202,12 +203,13 @@ def synchronize_data(merge_dfs_list):
     merged_df = merged_df.sort_values(by="Time", ignore_index=True)
     merged_df = merged_df.loc[(merged_df.Time >= start) & (merged_df.Time <= end)]
     for df in merge_dfs_list[1:]:
-        start = df.loc[0, 'Time']
-        end = df.loc[len(df.index)-1, 'Time']
-        df = df.sort_values(by="Time", ignore_index=True)
-        df = df.loc[(df.Time >= start) & (df.Time <= end)]
-        merged_df = pd.merge_asof(merged_df, df.sort_values(by="Time", ignore_index=True), on='Time',
-                                  tolerance=pd.Timedelta('1ms'), direction='nearest')
+        if len(df.index) > 0:
+            start = df.loc[0, 'Time']
+            end = df.loc[len(df.index)-1, 'Time']
+            df = df.sort_values(by="Time", ignore_index=True)
+            df = df.loc[(df.Time >= start) & (df.Time <= end)]
+            merged_df = pd.merge_asof(merged_df, df.sort_values(by="Time", ignore_index=True), on='Time',
+                                      tolerance=pd.Timedelta('1ms'), direction='nearest')
 
     # Set the index to 't_abs' to use time-based interpolation
     merged_df.set_index('Time', inplace=True)
@@ -238,14 +240,15 @@ def read_airfoil_geometry(filename, c, foil_source, eta_TE_flap, eta_LE_flap, fl
     :return df_airfoil:         DataFrame with info described above
     """
 
-    # initialize airfoilTools object
-    foil = at.Airfoil(foil_source)
+
 
     if os.path.exists(pickle_file):
         with open(pickle_file, 'rb') as file:
             df, foil, eta_LE_flap_read, eta_TE_flap_read = pickle.load(file)
 
     if not os.path.exists(pickle_file) or eta_LE_flap_read != eta_LE_flap or eta_TE_flap_read != eta_TE_flap:
+        # initialize airfoilTools object
+        foil = at.Airfoil(foil_source)
 
         if eta_TE_flap != 0.0:
             foil.flap(xFlap=flap_pivots[1, 0], yFlap=flap_pivots[1, 1], etaFlap=eta_TE_flap)
@@ -582,7 +585,7 @@ def plot_time_series(df_cp, df_p_abs, df_segments, U_cutoff=10, plot_drive=False
     """
 
     # plot U_CAS over time
-    fig, ax, = plt.subplots()
+    """fig, ax, = plt.subplots()
     ax.plot(df_cp["U_CAS"])
     ax.set_xlabel("$Time$")
     ax.set_ylabel("$U_{CAS} [m/s]$")
@@ -594,7 +597,7 @@ def plot_time_series(df_cp, df_p_abs, df_segments, U_cutoff=10, plot_drive=False
             color = "green"
         else:
             color = 'lightgray'
-        ax.axvspan(row['start'], row['end'], color=color, alpha=0.5)
+        ax.axvspan(row['start'], row['end'], color=color, alpha=0.5)"""
 
     # plot alpha, cl, cm, cmr over time
     fig, host = plt.subplots()
@@ -603,9 +606,9 @@ def plot_time_series(df_cp, df_p_abs, df_segments, U_cutoff=10, plot_drive=False
     ax_Re = host.twinx()
     ax_cd = host.twinx()
     if plot_pstat:
-        ax4 = host.twinx()
+        ax_pstat = host.twinx()
     if plot_drive:
-        ax5 = host.twinx()
+        ax_drive = host.twinx()
     # Offset the right twin axes so they don't overlap
     ax_alpha.spines['right'].set_position(('outward', 120))
     ax_Re.spines['right'].set_position(('outward', 60))
@@ -613,10 +616,10 @@ def plot_time_series(df_cp, df_p_abs, df_segments, U_cutoff=10, plot_drive=False
     axpos = 120
     if plot_pstat:
         axpos += 60
-        ax4.spines['right'].set_position(('outward', axpos))
+        ax_pstat.spines['right'].set_position(('outward', axpos))
     if plot_drive:
         axpos +=60
-        ax5.spines['right'].set_position(('outward', axpos))
+        ax_drive.spines['right'].set_position(('outward', axpos))
 
     # filter data
     window = 201
@@ -637,11 +640,11 @@ def plot_time_series(df_cp, df_p_abs, df_segments, U_cutoff=10, plot_drive=False
     ax_cd.plot(df_cp.loc[df_cp["U_CAS"] > U_cutoff].index, cd_filt, color=line[0].get_color())
 
     if plot_pstat:
-        line = ax4.plot(df_p_abs.index, df_p_abs[unit_sens_pstat], color="green", label="$p_{stat}$", zorder=1, alpha=0.35)
-        ax4.plot(df_p_abs.index, p_stat_filt, color=line[0].get_color())
+        line = ax_pstat.plot(df_p_abs.index, df_p_abs[unit_sens_pstat], color="green", label="$p_{stat}$", zorder=1, alpha=0.35)
+        ax_pstat.plot(df_p_abs.index, p_stat_filt, color=line[0].get_color())
 
     if plot_drive:
-        ax5.plot(df_cp.index, df_cp["Rake Position"], color="purple")
+        ax_drive.plot(df_cp.index, df_cp["Rake Position"], color="purple")
 
     for index, row in df_segments.iterrows():
         if index == i_seg_plot:
@@ -662,14 +665,16 @@ def plot_time_series(df_cp, df_p_abs, df_segments, U_cutoff=10, plot_drive=False
     ax_cd.set_ylim([0., 0.035])
     host.set_ylim([0, 2])
     if plot_pstat:
-        ax4.set_ylabel("$p_{stat}~\mathrm{[Pa]}$")
+        ax_pstat.set_ylabel("$p_{stat}~\mathrm{[Pa]}$")
     # Enabling grid on host
     host.grid()
     # Adding legends from all axes
     lines, labels = [], []
     axes = [host, ax_alpha, ax_Re, ax_cd]
     if plot_pstat:
-        axes.append(ax4)
+        axes.append(ax_pstat)
+    if plot_drive:
+        axes.append(ax_drive)
     for ax in axes:
         line, label = ax.get_legend_handles_labels()
         lines.extend(line)
@@ -902,48 +907,35 @@ def plot_polars(df):
 
 
     return
-def settling_time_average(df):
+def cumulative_average(df, df_segments, i_seg):
     '''
-    visualizes the running average over time in order to analyze if the sweep time is sufficient or not
+    visualizes the cumulative average over time in order to analyze if the sweep time is sufficient or not
     :param df:      df_sync
     :return:
     '''
 
-    Re=1e6
-    alpha=-4
-    # define Intervalls (might be adapted)
-    delta_alpha = 0.2
-    min_alpha = alpha - delta_alpha
-    max_alpha = alpha + delta_alpha
-    delta_Re = 0.1e6
-    min_Re = Re - delta_Re
-    max_Re = Re + delta_Re
 
-    # conditions to achieve representative values
-    condition = ((df["alpha"] > min_alpha) &
-                 (df["alpha"] < max_alpha) &
-                 (df["Re"] > min_Re) &
-                 (df["Re"] < max_Re))# &
-                 #(df["Rake Speed"] != 0))
+    t_start = np.abs(df.index-df_segments.loc[i_seg, "start"]).argmin()
+    t_end = np.abs(df.index-df_segments.loc[i_seg, "end"]).argmin()
 
-    # pick values which fulfill the condition
-    col_alpha = df.loc[condition, "alpha"]
-    col_cl = df.loc[condition, "cl"]
-    col_cd = df.loc[condition, "cd"]
-    col_cm = df.loc[condition, "cm"]
+    # Create a cumulative average column
+    df_seg = copy.deepcopy(df.iloc[t_start:t_end, :])
 
-    # visualize settling time of average calculation
-    # Create a running average column
-    col_cd['running_avg'] = col_cd.expanding().mean()
+    df_seg['alpha_cum_avg'] = df_seg["alpha"].expanding().mean()
+    df_seg['cl_cum_avg'] = df_seg["cl"].expanding().mean()
+    df_seg['cd_cum_avg'] = df_seg["cd"].expanding().mean()
 
     # Plotting the running average
-    plt.figure(figsize=(10, 6))
-    plt.plot(col_cd['running_avg'].index, col_cd['running_avg'], label='Running Average', color='blue')
+    fig, ax_cl = plt.subplots(figsize=(10, 6))
+    ax_cd = ax_cl.twinx()
+    ax_cl.plot(df_seg.index, df_seg['cl_cum_avg'], label='cumulative average of $c_l$', color='blue')
+    ax_cd.plot(df_seg.index, df_seg['cd_cum_avg'], label='cumulative average of $c_d$', color='red')
     plt.xlabel('Time')
-    plt.ylabel('Running Average of cd')
-    plt.title('Running Average of cd Over Time')
+    ax_cl.set_ylabel('cumulative average of $c_l$')
+    ax_cd.set_ylabel('cumulative average of $c_d$')
+    plt.title('Cumulative averages of $c_l$ and $c_d$ over time')
     plt.legend()
-    plt.grid(True)
+    ax_cd.grid(True)
 
 
     return
@@ -955,7 +947,7 @@ if __name__ == '__main__':
     # Lower cutoff speed for plots
     U_cutoff = 10
     # specify test segment, which should be plotted
-    i_seg_plot = 3
+    i_seg_plot = 0
 
     #airfoil = "Mü13-33"
     airfoil = "B200"
@@ -997,14 +989,16 @@ if __name__ == '__main__':
         l_ref = 0.5
         flap_pivots = np.array([[0.325, 0.0], [0.87, -0.004]])
         # specifiy, if drive data should be synchronized
-        sync_drive = False
-        seg_def_files = ["T012.xlsx"]
+        sync_drive = True
+        seg_def_files = ["T010.xlsx"]
         digitized_LWK_polar_files_clcd = []
         digitized_LWK_polar_files_clalpha = []
         #XFOIL_polar_files = ["B200-0_reinit_Re11e5_XFOILSUC.pol"]
-        XFOIL_polar_files = ["B200-1_reinit_Re1e6_XFOIL_HLIDP.pol", "B200-1_reinit_Re1e6_XFOIL_HLIDP_xtr0_325.pol"]
-        #WDIR = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/B200/2023_09_26/T6_R011"
-        WDIR = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/B200/2023_08_03/R003_20deg_clmax"
+        XFOIL_polar_files = ["B200_5deg_reinitialized_Re1_08.pol"]
+        #XFOIL_polar_files = ["B200-1_reinit_Re1e6_XFOIL_HLIDP.pol", "B200-1_reinit_Re1e6_XFOIL_HLIDP_xtr0_325.pol"]
+        #WDIR = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/B200/2023_09_26/T6"
+        WDIR = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/B200/2023_09_26/T10_R012"
+        #WDIR = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/B200/2023_08_03/R003_20deg_clmax"
         segments_def_dir = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/B200/Testsegments_specification"
         digitized_LWK_polar_dir = ""
         ref_dat_path = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/B200/01_Reference Data/"
@@ -1106,6 +1100,7 @@ if __name__ == '__main__':
             GPS = read_GPS(file_path_GPS)
             if sync_drive:
                 drive = read_drive(file_path_drive, t0=GPS["Time"].iloc[0])
+
             alphas = read_AOA_file(file_path_AOA, sigma_wall, t0=GPS["Time"].iloc[0], alpha_sens_offset=alpha_sens_offset)
             pstat_K02 = read_DLR_pressure_scanner_file(file_path_pstat_K02, n_sens=32, t0=GPS["Time"].iloc[0])
             pstat_K03 = read_DLR_pressure_scanner_file(file_path_pstat_K03, n_sens=32, t0=GPS["Time"].iloc[0])
@@ -1249,9 +1244,9 @@ if __name__ == '__main__':
 
 
 
-    altsort_polars[0].plotPolar(additionalPolars=altsort_polars[1:], PPAX=PPAX, Colorplot=True, LineAppearance=LineAppearance)
+    altsort_polars[0].plotPolar(additionalPolars=altsort_polars[1:], PPAX=PPAX, Colorplot=True, LineAppearance=LineAppearance, highlight=i_seg_plot)
 
-    #settling_time_average(df_sync_cp)
+    cumulative_average(df_sync, df_segments, i_seg_plot)
 
     plt.show()
     print("done")
