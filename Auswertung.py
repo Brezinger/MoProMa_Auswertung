@@ -15,8 +15,10 @@ from datetime import datetime, timedelta
 import tzlocal
 import itertools
 
-from matplotlib.dates import DateFormatter
 import matplotlib.pyplot as plt
+from matplotlib.dates import DateFormatter
+from matplotlib.ticker import MaxNLocator
+import pynmea2
 #plt.rcParams['text.usetex'] = True
 
 from scipy.signal import  savgol_filter
@@ -67,7 +69,11 @@ def read_AOA_file(filename, sigma_wall, t0):
 
     return df
 def read_GPS(filename):
-    df = pd.read_csv(filename, header=None)
+
+    with open(filename) as file:
+        lns = file.readlines()
+
+    df = pd.DataFrame(lns)
     # Apply the parsing function to each row
     parsed_data = df.apply(parse_gprmc_row, axis=1)
 
@@ -77,40 +83,21 @@ def read_GPS(filename):
     # Drop rows with any None values (if any invalid GPRMC sentences)
     df_parsed = df_parsed.dropna()
 
-    df_parsed["Time"] = df_parsed["Time"].dt.tz_localize('UTC')
-
     return df_parsed
-def parse_gprmc_row(row):
-    """
-    processes GPS data in gprmc format
-    :param row:
-    :return:
-    """
-    parts = row.tolist()
-    parts = [str(part) for part in parts]
-    if len(parts) >= 13 and parts[0] == '$GPRMC' and parts[2] == 'A':
-        try:
-            time_str = parts[1]
-            date_str = parts[9]
-            latitude = float(parts[3][:2]) + float(parts[3][2:]) / 60.0
-            if parts[4] == 'S':
-                latitude = -latitude
-            longitude = float(parts[5][:2]) + float(parts[5][2:]) / 60.0
-            if parts[6] == 'W':
-                longitude = -longitude
-            gps_speed = float(parts[7]) * 1.852/3.6
-
-            # Convert time and date to datetime
-            datetime_str = date_str + time_str
-            seconds, microseconds = datetime_str.split('.')
-            microseconds = microseconds.ljust(6, '0')  # Pad to ensure 6 digits
-            datetime_str = f"{seconds}.{microseconds}"
-            datetime_format = '%d%m%y%H%M%S.%f'
-            datetime_val = pd.to_datetime(datetime_str, format=datetime_format)
-
-            return datetime_val, latitude, longitude, gps_speed
-        except (ValueError, IndexError) as e:
-            # Handle any parsing errors
+def parse_gprmc_row(line):
+    if "$GPRMC" in line.values[0] or "$GNRMC" in line.values[0]:
+        data = pynmea2.parse(line.values[0])
+        if data.is_valid:
+            # Get the time
+            timestamp = data.datetime
+            # Get the speed in knots
+            speed_knots = data.spd_over_grnd
+            lat = data.latitude
+            lon = data.longitude
+            # Convert the speed to km/h (1 knot = 1.852 km/h)
+            speed_ms = speed_knots * 1.852/3.6
+            return timestamp, lat, lon, speed_ms
+        else:
             return None, None, None, None
     else:
         return None, None, None, None
@@ -619,8 +606,8 @@ def plot_specify_segment(df_cp, df_p_abs, df_segments, U_cutoff=10, plot_pstat=F
     if plot_pstat:
         ax4 = host.twinx()
     # Offset the right twin axes so they don't overlap
-    ax1.spines['right'].set_position(('outward', 120))
-    ax2.spines['right'].set_position(('outward', 60))
+    ax1.spines['right'].set_position(('outward', 150))
+    ax2.spines['right'].set_position(('outward', 85))
     ax3.spines['right'].set_position(('outward', 0))
     if plot_pstat:
         ax4.spines['right'].set_position(('outward', 180))
@@ -654,16 +641,15 @@ def plot_specify_segment(df_cp, df_p_abs, df_segments, U_cutoff=10, plot_pstat=F
         host.axvspan(row['start'], row['end'], color=color, alpha=0.5)
 
     # Formatting the x-axis to show minutes and seconds
-    host.xaxis.set_major_formatter(DateFormatter("%H:%M:%S"))
-    #host.xaxis.set_major_formatter(ticker.FormatStrFormatter('%0.1f'))
+    host.xaxis.set_major_formatter(DateFormatter("%M:%S"))
     # Setting labels
-    host.set_xlabel("$Time[mm:ss]$")
-    ax1.set_ylabel(r"$\alpha~\mathrm{[^\circ]}$")
-    host.set_ylabel("$c_l$")
-    ax2.set_ylabel("$Re$")
-    ax3.set_ylabel("$c_d$")
+    host.set_xlabel("$Time[mm:ss]$", fontsize=20)
+    ax1.set_ylabel(r"$\alpha~\mathrm{[^\circ]}$", fontsize=20)
+    host.set_ylabel("$c_l$", fontsize=20)
+    ax2.set_ylabel("$Re$", fontsize=20)
+    ax3.set_ylabel("$c_d$", fontsize=20)
     if plot_pstat:
-        ax4.set_ylabel("$p_{stat}~\mathrm{[Pa]}$")
+        ax4.set_ylabel("$p_{stat}~\mathrm{[Pa]}$", fontsize=20)
     # Enabling grid on host
     host.grid()
     # Adding legends from all axes
@@ -675,9 +661,14 @@ def plot_specify_segment(df_cp, df_p_abs, df_segments, U_cutoff=10, plot_pstat=F
         line, label = ax.get_legend_handles_labels()
         lines.extend(line)
         labels.extend(label)
-    host.tick_params(axis='x', labelrotation=80)
-    fig.legend(lines, labels, loc='upper right')
-
+    host.tick_params(axis='x', labelrotation=80, labelsize=18)
+    host.tick_params(axis='y', labelsize=18)
+    ax1.tick_params(axis='y', labelsize=18)
+    ax2.tick_params(axis='y', labelsize=18)
+    ax3.tick_params(axis='y', labelsize=18)
+    fig.legend(lines, labels, loc='upper right', fontsize=20)
+    fig.tight_layout()  # Automatically adjusts subplot params to give some padding
+    fig.subplots_adjust(right=0.75)
 
     """
     # plot path of car
@@ -700,7 +691,7 @@ def plot_specify_segment(df_cp, df_p_abs, df_segments, U_cutoff=10, plot_pstat=F
     ax6.grid()"""
 
     return
-def plot_cp_x_and_wake(df, df_airfoil, at_airfoil, sens_ident_cols, df_segments, i_seg):
+def plot_cp_x_and_wake(df, df_airfoil, at_airfoil, sens_ident_cols, df_segments, i_seg, file_path):
     """
     plots cp(x) and wake depression (x) at certain operating points (alpha, Re and beta)
     :param df:      pandas dataframe with index time and data to be plotted
@@ -713,12 +704,16 @@ def plot_cp_x_and_wake(df, df_airfoil, at_airfoil, sens_ident_cols, df_segments,
     t_start = np.abs(df_sync.index-df_segments.loc[i_seg, "start"]).argmin()
     t_end = np.abs(df_sync.index-df_segments.loc[i_seg, "end"]).argmin()
 
+    # read file of cp(x) reference data
+    df_cp_x_ref = pd.read_csv(file_path, sep='   ', skiprows=4, header=None, names=['x', 'y'], engine='python')
+
     # plot cp(x)
     fig, ax = plt.subplots()
     ax_cp = ax.twinx()
-    ax.plot(at_airfoil.coords[:, 0], at_airfoil.coords[:, 1], "k-")
-    ax.plot(df_airfoil["x"], df_airfoil["y"], "k.")
-    ax_cp.plot(df_airfoil["x"], df[sens_ident_cols].iloc[t_start:t_end].mean(), "r.-")
+    #ax.plot(at_airfoil.coords[:, 0], at_airfoil.coords[:, 1], "k.")
+    ax.plot(df_airfoil["x"], df_airfoil["y"], "k-")
+    ax_cp.plot(df_airfoil["x"], df[sens_ident_cols].iloc[t_start:t_end].mean(), "r.-", label='AWK')
+    ax_cp.plot(df_cp_x_ref['x'], df_cp_x_ref['y'], "b.-", label='LWK')
     # Calculate mean values and standard deviations over the specified time interval
     mean_cp_values = df[sens_ident_cols].iloc[t_start:t_end].mean()
     std_cp_values = df[sens_ident_cols].iloc[t_start:t_end].std()
@@ -726,12 +721,16 @@ def plot_cp_x_and_wake(df, df_airfoil, at_airfoil, sens_ident_cols, df_segments,
     ax_cp.errorbar(df_airfoil["x"], mean_cp_values, yerr=std_cp_values, fmt='r.-', ecolor='gray', elinewidth=1,capsize=2)
     ylim_u, ylim_l = ax_cp.get_ylim()
     ax_cp.set_ylim([ylim_l, ylim_u])
-    ax.set_xlabel("$x$")
-    ax.set_ylabel("$y$")
-    ax_cp.set_ylabel("$c_p$")
-    ax.set_title("Pressure distribution over airfoil")
+    ax.set_xlabel("$x$", fontsize=20)
+    ax.set_ylabel("$y$", fontsize=20)
+    ax_cp.set_ylabel("$c_p$", fontsize=20)
+    ax.tick_params(axis='x', labelsize=18)
+    ax.tick_params(axis='y', labelsize=18)
+    ax_cp.tick_params(axis='y', labelsize=18)
+    ax.set_title("Pressure distribution over airfoil", fontsize=24)
     ax_cp.grid()
     ax.axis("equal")
+    plt.legend(fontsize=20)
 
     # plot wake depression(x)
     # extract total pressure of wake rake from dataframe
@@ -745,8 +744,6 @@ def plot_cp_x_and_wake(df, df_airfoil, at_airfoil, sens_ident_cols, df_segments,
     # it is assumed, that 0th sensor is defective (omit that value)
     z_tot = z_tot[1:]
 
-
-
     fig, ax = plt.subplots()
     ax_cp = ax.twiny()
     ax.plot(at_airfoil.coords[:, 0]*100, at_airfoil.coords[:, 1]*100, "k-")
@@ -758,12 +755,17 @@ def plot_cp_x_and_wake(df, df_airfoil, at_airfoil, sens_ident_cols, df_segments,
     ax_cp.errorbar(mean_ptot_values, z_tot, xerr=std_ptot_values, fmt='r.-', ecolor='gray', elinewidth=1, capsize=2)
     ylim_l, ylim_u = ax_cp.get_ylim()
     ax_cp.set_ylim([ylim_l, ylim_u])
-    ax.set_xlabel("$x$")
-    ax.set_ylabel("$z$")
-    ax_cp.set_xlabel("$c_p$")
-    ax.set_title("Wake Depression")
+    ax.set_xlabel("$x$", fontsize=20)
+    ax.set_ylabel("$z$", fontsize=20)
+    ax_cp.set_xlabel("$c_p$", fontsize=20)
+    ax.set_title("Wake Depression", fontsize=24)
+    ax.tick_params(axis='x', labelsize=18)
+    ax.tick_params(axis='y', labelsize=18)
+    ax_cp.tick_params(axis='x', labelsize=18)
     ax_cp.grid()
     ax.axis("equal")
+    fig.tight_layout()  # Automatically adjusts subplot params to give some padding
+    #fig.subplots_adjust(right=0.75)
 
     return
 def plot_3D(df):
@@ -907,49 +909,31 @@ def plot_polars(df):
 
 
     return
-def settling_time_average(df):
+def settling_time_average(df_sync, i_seg, df_segments):
     '''
     visualizes the running average over time in order to analyze if the sweep time is sufficient or not
     :param df:      df_sync
     :return:
     '''
 
-    Re=1e6
-    alpha=-4
-    # define Intervalls (might be adapted)
-    delta_alpha = 0.2
-    min_alpha = alpha - delta_alpha
-    max_alpha = alpha + delta_alpha
-    delta_Re = 0.1e6
-    min_Re = Re - delta_Re
-    max_Re = Re + delta_Re
-
-    # conditions to achieve representative values
-    condition = ((df["alpha"] > min_alpha) &
-                 (df["alpha"] < max_alpha) &
-                 (df["Re"] > min_Re) &
-                 (df["Re"] < max_Re))# &
-                 #(df["Rake Speed"] != 0))
-
-    # pick values which fulfill the condition
-    col_alpha = df.loc[condition, "alpha"]
-    col_cl = df.loc[condition, "cl"]
-    col_cd = df.loc[condition, "cd"]
-    col_cm = df.loc[condition, "cm"]
-
-    # visualize settling time of average calculation
-    # Create a running average column
-    col_cd['running_avg'] = col_cd.expanding().mean()
+    # Find the closest indices for the start and end times
+    t_start = np.abs(df_sync.index - df_segments.loc[i_seg, "start"]).argmin()
+    t_end = np.abs(df_sync.index - df_segments.loc[i_seg, "end"]).argmin()
+    df_col_cd = df_sync['cd'].iloc[t_start:t_end]
+    df_col_cd_ra = pd.DataFrame()
+    df_col_cd_ra = df_col_cd.expanding().mean()
 
     # Plotting the running average
-    plt.figure(figsize=(10, 6))
-    plt.plot(col_cd['running_avg'].index, col_cd['running_avg'], label='Running Average', color='blue')
-    plt.xlabel('Time')
-    plt.ylabel('Running Average of cd')
-    plt.title('Running Average of cd Over Time')
-    plt.legend()
-    plt.grid(True)
-
+    fig, ax = plt.subplots(figsize=(10, 8))
+    ax.xaxis.set_major_formatter(DateFormatter("%M:%S"))
+    ax.plot(df_col_cd_ra.index, df_col_cd_ra, label='Running Average', color='blue')
+    ax.set_xlabel('Time [mm:ss]', fontsize=20)
+    ax.set_ylabel('Cumulated Average of cd', fontsize=20)
+    ax.set_title('Cumulated average', fontsize=24)
+    ax.tick_params(axis='x', labelsize=18)
+    ax.tick_params(axis='y', labelsize=18)
+    ax.xaxis.set_major_locator(MaxNLocator(nbins='auto', integer=True))
+    ax.grid(True)
 
     return
 
@@ -960,7 +944,7 @@ if __name__ == '__main__':
     # Lower cutoff speed for plots
     U_cutoff = 10
     # specify test segment, which should be plotted
-    i_seg_plot = 5
+    i_seg_plot = 14
 
     airfoil = "Mü13-33"
     #airfoil = "B200"
@@ -968,9 +952,9 @@ if __name__ == '__main__':
     if airfoil == "Mü13-33":
         l_ref = 0.7
         # Raw data file prefix
-        seg_def_files = ["T025_untrimmed.xlsx"]
-        digitized_LWK_polar_files_clcd = ["Re8e5_beta15_cl-cd.txt"]
-        digitized_LWK_polar_files_clalpha = ["Re8e5_beta15_cl-alpha.txt"]
+        seg_def_files = ["T024.xlsx"] #
+        digitized_LWK_polar_files_clcd = ["Re1e6_beta15_cl-cd.txt"] #"Re1e6_beta7.5_cl-cd.txt", "Re1e6_beta15_cl-cd.txt"
+        digitized_LWK_polar_files_clalpha = ["Re1e6_beta15_cl-alpha.txt"] #,"Re1e6_beta7.5_cl-alpha.txt", "Re1e6_beta15_cl-alpha.txt"
         # set calibration type in seg_def Excel file ("20sec", "manual", "file")
         # set flap deflection in seg_def Excel file
         if os.getlogin() == 'joeac':
@@ -991,6 +975,7 @@ if __name__ == '__main__':
         file_path_msr_pts = os.path.join(ref_dat_path, 'Messpunkte Demonstrator_Mue13-33.xlsx')
         pickle_path_msr_pts = os.path.join(ref_dat_path, 'Messpunkte Demonstrator.p')
         cp_path_wall_correction = os.path.join(ref_dat_path, 'mue13-33-le15-tgap0_14.cp')
+        cp_x_path_ref = os.path.join(digitized_LWK_polar_dir, 'Doeller_Pressure distribution over airfoil_Re1_beta15_alpha9.7.txt')
     elif airfoil == "B200":
         l_ref = 0.5
         seg_def_files = ["T006_R011.xlsx"]
@@ -1002,7 +987,7 @@ if __name__ == '__main__':
         ref_dat_path = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/B200/01_Reference Data/"
         prandtl_data = {"unit name static": "static_K04", "i_sens_static": 31,
                         "unit name total": "ptot_rake", "i_sens_total": 3}
-        # "unit name total": "static_K04", "i_sens_total": 32}
+                        # "unit name total": "static_K04", "i_sens_total": 32}
 
         foil_coord_path = os.path.join(ref_dat_path, "B200-0_reinitialized.dat")
         file_path_msr_pts = os.path.join('C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/03_Static pressure measurement system/Messpunkte Demonstrator/Messpunkte Demonstrator.xlsx')
@@ -1052,17 +1037,16 @@ if __name__ == '__main__':
         # read segment times
         df_segments = pd.read_excel(segments_def_path, skiprows=1, usecols="A:H").ffill(axis=0)
         df_segments[["hh", "mm", "ss", "hh.1", "mm.1", "ss.1"]] = df_segments[["hh", "mm", "ss", "hh.1", "mm.1", "ss.1"]].astype(int)
-        local_timezone = tzlocal.get_localzone_name()
         df_segments['start'] = pd.to_datetime(df_segments['dd'].astype(str) + ' ' +
                                               df_segments['hh'].astype(str) + ':' +
                                               df_segments['mm'].astype(str) + ':' +
                                               df_segments['ss'].astype(str),
-                                              errors='coerce', utc=False).dt.tz_localize(local_timezone, ambiguous='NaT', nonexistent='shift_forward')
+                                              errors='coerce', utc=True)
         df_segments['end'] = pd.to_datetime(df_segments['dd.1'].astype(str) + ' ' +
                                             df_segments['hh.1'].astype(str) + ':' +
                                             df_segments['mm.1'].astype(str) + ':' +
                                             df_segments['ss.1'].astype(str),
-                                            errors='coerce', utc=False).dt.tz_localize(local_timezone, ambiguous='NaT', nonexistent='shift_forward')
+                                            errors='coerce', utc=True)
 
         df_segments = df_segments[['start', 'end']]
 
@@ -1140,7 +1124,7 @@ if __name__ == '__main__':
         # visualisation
         plot_specify_segment(df_sync, df_p_abs, df_segments, U_cutoff, i_seg_plot=i_seg_plot)
         #plot_3D(df_sync_cp)
-        plot_cp_x_and_wake(df_sync, df_airfoil, airfoil, sens_ident_cols, df_segments, i_seg_plot) # df_sync_cp.index.get_loc(pd.Timestamp('2024-06-13 23:38:00'))
+        plot_cp_x_and_wake(df_sync, df_airfoil, airfoil, sens_ident_cols, df_segments, i_seg_plot, cp_x_path_ref) # df_sync_cp.index.get_loc(pd.Timestamp('2024-06-13 23:38:00'))
 
 
         df_polar = prepare_polar_df(df_sync, df_segments)
@@ -1180,7 +1164,7 @@ if __name__ == '__main__':
     LineAppearance['linestyle'] = []
     LineAppearance['marker'] = []
     # R G B
-    LineAppearance['color'].append((68. / 255., 255. / 255., 68. / 255.))  # green
+    LineAppearance['color'].append((0. / 255., 255. / 255., 0. / 255.))  # green
     LineAppearance['color'].append("k")
     LineAppearance['color'].append((60. / 255., 155. / 255., 255. / 255.))  # light blue
     LineAppearance['color'].append("k")
@@ -1221,10 +1205,9 @@ if __name__ == '__main__':
 
     altsort_polars[0].plotPolar(additionalPolars=altsort_polars[1:], PPAX=PPAX, Colorplot=True, LineAppearance=LineAppearance)
 
-    #settling_time_average(df_sync_cp)
+    settling_time_average(df_sync, i_seg_plot, df_segments)
 
-    plt.show()
     print("done")
 
-    #plt.savefig('polar_comparison_Re1e6.jpg', format='jpg', dpi=1000)
+    #plt.savefig('specify_segment.jpg', format='jpg', dpi=600)
 
