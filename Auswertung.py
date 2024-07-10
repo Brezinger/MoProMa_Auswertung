@@ -947,10 +947,10 @@ if __name__ == '__main__':
     # Lower cutoff speed for plots
     U_cutoff = 10
     # specify test segment, which should be plotted
-    i_seg_plot = 0
+    i_seg_plot = 5
 
-    #airfoil = "Mü13-33"
-    airfoil = "B200"
+    airfoil = "Mü13-33"
+    #airfoil = "B200"
     # constants and input data
     if airfoil == "Mü13-33":
         l_ref = 0.7
@@ -959,14 +959,14 @@ if __name__ == '__main__':
         # specifiy, if drive data should be synchronized
         sync_drive = False
         # Raw data file prefix
-        seg_def_files = ["T025_untrimmed.xlsx"]
-        digitized_LWK_polar_files_clcd = ["Re8e5_beta15_cl-cd.txt"]
-        digitized_LWK_polar_files_clalpha = ["Re8e5_beta15_cl-alpha.txt"]
+        seg_def_files = ["T007.xlsx"]
+        digitized_LWK_polar_files_clcd = ["Re1e6_cl-cd.txt"]
+        digitized_LWK_polar_files_clalpha = ["Re1e6_cl-alpha.txt"]
         XFOIL_polar_files = []
         # set calibration type in seg_def Excel file ("20sec", "manual", "file")
         # set flap deflection in seg_def Excel file
         if os.getlogin() == 'joeac':
-            WDIR = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/Mü13-33/2024-06-18"
+            WDIR = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/Mü13-33/2024-06-13/T002_T009"
             segments_def_dir = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/Mü13-33/testsegments_specification"
             digitized_LWK_polar_dir = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/Mü13-33/Digitized data Döller LWK/"
             ref_dat_path = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/Mü13-33/01_Reference Data/"
@@ -976,8 +976,8 @@ if __name__ == '__main__':
             digitized_LWK_polar_dir = "D:/Python_Codes/Rohdateien/digitized_polars_doeller"
             ref_dat_path = "D:/Python_Codes/Workingdirectory_Auswertung/"
         prandtl_data = {"unit name static": "static_K04", "i_sens_static": 31,
-                        "unit name total": "ptot_rake", "i_sens_total": 3}
-                        #"unit name total": "static_K04", "i_sens_total": 32}
+                        "unit name total": "ptot_rake", "i_sens_total": 3} # This is the third sensor in the wake rake
+                        #"unit name total": "static_K04", "i_sens_total": 32} # This is the original total pressure sensor
 
         foil_coord_path = os.path.join(ref_dat_path, "mue13-33-le15.dat")
         file_path_msr_pts = os.path.join(ref_dat_path, 'Messpunkte Demonstrator_Mue13-33.xlsx')
@@ -990,15 +990,21 @@ if __name__ == '__main__':
         flap_pivots = np.array([[0.325, 0.0], [0.87, -0.004]])
         # specifiy, if drive data should be synchronized
         sync_drive = True
-        seg_def_files = ["T010.xlsx"]
+
+        #seg_def_files = ["T006.xlsx"]
+        #XFOIL_polar_files = ["B200-0_reinit_Re11e5_XFOILSUC.pol"]
+        #WDIR = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/B200/2023_09_26/T6"
+
+        # seg_def_files = ["T010.xlsx"]
+        # XFOIL_polar_files = ["B200_5deg_reinitialized_Re1_08.pol"]
+        # WDIR = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/B200/2023_09_26/T10_R012"
+
+        seg_def_files = ["T012.xlsx"]
+        XFOIL_polar_files = ["B200-1_reinit_Re1e6_XFOIL_HLIDP.pol", "B200-1_reinit_Re1e6_XFOIL_HLIDP_xtr0_325.pol"]
+        WDIR = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/B200/2023_08_03/R003_20deg_clmax"
+
         digitized_LWK_polar_files_clcd = []
         digitized_LWK_polar_files_clalpha = []
-        #XFOIL_polar_files = ["B200-0_reinit_Re11e5_XFOILSUC.pol"]
-        XFOIL_polar_files = ["B200_5deg_reinitialized_Re1_08.pol"]
-        #XFOIL_polar_files = ["B200-1_reinit_Re1e6_XFOIL_HLIDP.pol", "B200-1_reinit_Re1e6_XFOIL_HLIDP_xtr0_325.pol"]
-        #WDIR = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/B200/2023_09_26/T6"
-        WDIR = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/B200/2023_09_26/T10_R012"
-        #WDIR = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/B200/2023_08_03/R003_20deg_clmax"
         segments_def_dir = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/B200/Testsegments_specification"
         digitized_LWK_polar_dir = ""
         ref_dat_path = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/B200/01_Reference Data/"
@@ -1051,7 +1057,11 @@ if __name__ == '__main__':
         eta_LE_flap = pd.read_excel(segments_def_path, skiprows=0, usecols="M").dropna().values.astype(
             "float").flatten()
         eta_TE_flap = eta_TE_flap[i_file]
-        eta_LE_flap = eta_LE_flap[i_file]
+        if len(eta_LE_flap) == len(seg_def_files):
+            eta_LE_flap = eta_LE_flap[i_file]
+        else:
+            eta_LE_flap = 0
+
         list_of_eta_flaps.append(eta_TE_flap)
         # read segment times
         df_segments = pd.read_excel(segments_def_path, skiprows=1, usecols="A:H").ffill(axis=0)
@@ -1244,7 +1254,11 @@ if __name__ == '__main__':
 
 
 
-    altsort_polars[0].plotPolar(additionalPolars=altsort_polars[1:], PPAX=PPAX, Colorplot=True, LineAppearance=LineAppearance, highlight=i_seg_plot)
+    altsort_polars[0].plotPolar(additionalPolars=altsort_polars[1:], PPAX=PPAX, Colorplot=True,
+                                LineAppearance=LineAppearance, highlight=i_seg_plot)
+    altsort_polars[0].plotPolar(additionalPolars=altsort_polars[1:], PPAX=PPAX, Colorplot=True,
+                                LineAppearance=LineAppearance, saveFlag=True, format="pdf",
+                                saveFileName=seg_def_files[0].rstrip(".xlsx"))
 
     cumulative_average(df_sync, df_segments, i_seg_plot)
 
