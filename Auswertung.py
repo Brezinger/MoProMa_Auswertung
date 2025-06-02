@@ -10,7 +10,7 @@ import os
 import pickle
 import numpy as np
 import pandas as pd
-import tzlocal
+from datetime import timezone
 import itertools
 import pynmea2
 
@@ -25,6 +25,23 @@ if os.getlogin() == 'joeac':
 else:
     sys.path.append("D:/Python_Codes/Uebung1/modules/airfoilwinggeometry")
 from airfoilwinggeometry.AirfoilPackage import AirfoilTools as at
+
+def asymmetric_trim_mean(row, lower_frac, upper_frac):
+    "Calculates trimmed mean values for reference total pressure calculation"
+    sorted_row = sorted(row)
+    n = len(sorted_row)
+    lower_idx = int(n * lower_frac)
+    upper_idx = int(n * (1 - upper_frac))
+    trimmed_values = sorted_row[lower_idx:upper_idx]
+    return sum(trimmed_values) / len(trimmed_values)
+
+def trimmed_median(row, lower_frac=0.5, upper_frac=0.05):
+    sorted_row = np.sort(row)
+    n = len(sorted_row)
+    lower_idx = int(np.floor(n * lower_frac))
+    upper_idx = int(np.ceil(n * (1 - upper_frac)))
+    trimmed_values = sorted_row[lower_idx:upper_idx]
+    return np.median(trimmed_values)
 
 def read_AOA_file(filename, sigma_wall, t0, alpha_sens_offset=214.73876953125):
     """
@@ -45,6 +62,7 @@ def read_AOA_file(filename, sigma_wall, t0, alpha_sens_offset=214.73876953125):
 
     # Combine Date and Time into a single pandas datetime column
     df['Time'] = pd.to_datetime(df['Date'] + ' ' + df['Time'])
+
     # Select only the relevant columns
     df = df[['Time', 'alpha']]
 
@@ -54,13 +72,18 @@ def read_AOA_file(filename, sigma_wall, t0, alpha_sens_offset=214.73876953125):
     # Calculate the time difference in milliseconds from the first row
     time_diff_ms = df['Time'] - df['Time'].iloc[0]
 
+    # Calculate time difference between t0 (GPS data) and AOA data (from local computer time)
+    delta_t_GPS_PC = t0.astimezone(timezone.utc) - df['Time'].iloc[0].tz_localize(timezone.utc)
+
     # Add this difference to the start time (in milliseconds) and convert back to datetime
     df['Time'] = pd.to_datetime(pd.Timestamp(start_time_ms, unit='ms') + time_diff_ms, unit='ms')
+    df['Time'] = df['Time'].dt.tz_localize('UTC')
 
     # apply wind tunnel wall corrections
     df.loc[:, "alpha"] = df["alpha"] * (1 + sigma_wall)
 
-    return df
+    return df, delta_t_GPS_PC
+
 def read_GPS(filename):
 
     with open(filename) as file:
@@ -84,26 +107,34 @@ def parse_gprmc_row(line):
     if "$GPRMC" in line.values[0] or "$GNRMC" in line.values[0]:
         data = pynmea2.parse(line.values[0])
         if data.is_valid:
-            # Get the time
-            timestamp = data.datetime
-            # Get the speed in knots
-            speed_knots = data.spd_over_grnd
-            lat = data.latitude
-            lon = data.longitude
-            # Convert the speed to km/h (1 knot = 1.852 km/h)
-            speed_ms = speed_knots * 1.852/3.6
-            return timestamp, lat, lon, speed_ms
+            try:
+                # Get the time
+                timestamp = data.datetime
+                # Get the speed in knots
+                speed_knots = data.spd_over_grnd
+                lat = data.latitude
+                lon = data.longitude
+                # Convert the speed to km/h (1 knot = 1.852 km/h)
+                speed_ms = speed_knots * 1.852/3.6
+                return timestamp, lat, lon, speed_ms
+            except TypeError:
+                return None, None, None, None
         else:
             return None, None, None, None
     else:
         return None, None, None, None
-def read_drive(filename, t0):
+
+def read_drive(filename, t0, delta_t, sync_method="delta_t"):
     """
     --> Reads drive data of wake rake (position and speed) into pandas DataFrame
     --> combines Date and Time to one pandas datetime column
     --> drive time = master time
-    :param filename:       File name
-    :return: df            pandas DataFrame with drive data
+    :param filename:      File name
+    :param t0:            Start time of first timestamp for synchronization
+    :param delta_t        Time offset between GPS time and computer time of measurement laptop
+    :param sync_method:   Synchronization method to use. Either t0 to use first timestamp and set times equal (better,
+                          when first timestamp was recorded), or delta_t (better, when first timestamp was not recorded)
+    :return: df           pandas DataFrame with drive data
     """
     # list of column numbers in file to be read
     col_use = [0, 1, 2, 3]
@@ -116,21 +147,33 @@ def read_drive(filename, t0):
 
     # Combine Date and Time into a single pandas datetime column
     df['Time'] = pd.to_datetime(df['Date'] + ' ' + df['Time'])
+    if df['Time'].iloc[0].tzinfo is None or df['Time'].iloc[0].tzinfo.utcoffset(df['Time'].iloc[0]) is None:
+        df['Time'] = (
+            df['Time']
+            .dt.tz_localize('Europe/Vienna')  # Set the correct local timezone
+            .dt.tz_convert('UTC')  # Convert to UTC
+        )
 
     # drop date column (date column may generate problems when synchronizing data)
     df = df.drop(columns='Date')
 
-    # Convert start time to milliseconds since it is easier to handle arithmetic operations
-    start_time_ms = t0.timestamp() * 1000
+    if sync_method == "t0":
+        # Convert start time to milliseconds since it is easier to handle arithmetic operations
+        start_time_ms = t0.timestamp() * 1000
 
-    # Calculate the time difference in milliseconds from the first row
-    if len(df.index) > 0:
-        time_diff_ms = df['Time'] - df['Time'].iloc[0]
+        # Calculate the time difference in milliseconds from the first row
+        if len(df.index) > 0:
+            time_diff_ms = df['Time'] - df['Time'].iloc[0]
 
-        # Add this difference to the start time (in milliseconds) and convert back to datetime
-        df['Time'] = pd.to_datetime(pd.Timestamp(start_time_ms, unit='ms') + time_diff_ms, unit='ms')
+            # Add this difference to the start time (in milliseconds) and convert back to datetime
+            df['Time'] = pd.to_datetime(pd.Timestamp(start_time_ms, unit='ms') + time_diff_ms, unit='ms')
+    elif sync_method == "delta_t":
+        df['Time'] = df['Time'] + delta_t
+    else:
+        raise ValueError("wrong sync method")
 
     return df
+
 def read_DLR_pressure_scanner_file(filename, n_sens, t0):
     """
     Converts raw sensor data to pandas DataFrame
@@ -152,7 +195,7 @@ def read_DLR_pressure_scanner_file(filename, n_sens, t0):
     columns = ["Time"] + [unit_name + f"_{i}" for i in range(1, n_sens+1)]
 
     # loading data into DataFrame. First line is skipped by default, because data is usually incorrect
-    df = pd.read_csv(filename, sep="\s+", skiprows=1, header=None, on_bad_lines='skip')
+    df = pd.read_csv(filename, sep="\s+", skiprows=1, header=None, on_bad_lines='skip').dropna(axis=1, how='all')
     # if not as many columns a number of sensors (+2 for time and timedelta columns), then raise an error
     assert len(df.columns) == n_sens+2
 
@@ -183,11 +226,32 @@ def read_DLR_pressure_scanner_file(filename, n_sens, t0):
     # Calculate the time difference in milliseconds from the first row
     time_diff_ms = df['Time'] - df['Time'].iloc[0]
 
-    # Add this difference to the start time (in milliseconds) and convert back to datetime
-    df['Time'] = pd.to_datetime(start_time_ms + time_diff_ms, unit='ms')
+    # The maximum value pandas can handle (ns precision is default, ~year 2262)
+    max_ms = pd.Timestamp.max.value // 10 ** 6  # Convert from ns to ms
+    min_ms = pd.Timestamp.min.value // 10 ** 6
 
+    series_ms = start_time_ms + time_diff_ms
+    series_ms = np.clip(series_ms, min_ms, max_ms)
+
+    # Remove or flag the out-of-range values
+    valid = (series_ms >= min_ms) & (series_ms <= max_ms)
+    df = df[valid]
+    series_ms = series_ms[valid]
+
+    if not valid.all():
+        print(f"{(~valid).sum()} values are out of bounds for pandas datetime.")
+
+    # Add this difference to the start time (in milliseconds) and convert back to datetime
+    df['Time'] = pd.to_datetime(series_ms, unit='ms')
+
+    # convert to UTC
+    df['Time'] = (
+        df['Time']
+        .dt.tz_localize('UTC')  # Convert to UTC
+    )
 
     return df
+
 def synchronize_data(merge_dfs_list):
     """
     synchronizes and interpolates sensor data, given in pandas DataFrames with a timestamp
@@ -218,9 +282,10 @@ def synchronize_data(merge_dfs_list):
     merged_df = merged_df.interpolate(method='time')
 
     # localize index of df_sync to UTC
-    merged_df.index = merged_df.index.tz_localize("UTC")
+    merged_df.index = merged_df.index.tz_convert("UTC")
 
     return merged_df
+
 def read_airfoil_geometry(filename, c, foil_source, eta_TE_flap, eta_LE_flap, flap_pivots, pickle_file=""):
     """
     --> searchs for pickle file in WD, if not found it creates a new pickle file
@@ -292,7 +357,59 @@ def read_airfoil_geometry(filename, c, foil_source, eta_TE_flap, eta_LE_flap, fl
                 pickle.dump([df, foil, eta_LE_flap, eta_TE_flap], file)
 
     return df, foil
-def calc_airspeed_wind(df, prandtl_data, T, l_ref):
+
+def calc_ptot_pstat(df, sensor_defective_mask, prandtl_data, total_ref_pressure_method="trimmed median"):
+    """
+    calculates total reference pressure from wake rake data by using an asymmetric trimmed mean of pressure sensor values
+    (cutoff of 5%, i.e. highest pressure and 50% lowest pressures)
+    :param df:
+    :param sensor_defective_mask:
+    :param prandtl_data:            dict with "unit name static", "i_sens_static", "unit name total" and
+                                    "i_sens_total".
+                                    This specifies the sensor units and the index of the sensors of the Prandtl
+                                    probe total
+                                    pressure sensor and the static pressure sensor
+    :param method:                  str, determines method of total reference pressure calculation. One of:
+                                    "trimmed median", "trimmed average", "single
+    :return: 
+    """
+
+    # calculate averaged mean
+    cols = [f'ptot_rake_{i}' for i in range(1, 33) if i not in np.array(sensor_defective_mask)+1]
+
+    trimmed_median_ptot = df[cols].apply(
+        lambda row: trimmed_median(row, lower_frac=0.5, upper_frac=0.05), axis=1
+    )
+
+    trimmed_average_ptot = df[cols].apply(
+        lambda row: asymmetric_trim_mean(row, lower_frac=0.5, upper_frac=0.05), axis=1
+    )
+
+    colname_total = prandtl_data['unit name total'] + '_' + str(prandtl_data['i_sens_total'])
+    ptot_single = df[colname_total] # use single reference sensor
+
+    if total_ref_pressure_method == "trimmed median":
+        df["ptot"] = trimmed_median_ptot
+    elif total_ref_pressure_method == "trimmed average":
+        df["ptot"] = trimmed_average_ptot
+    elif total_ref_pressure_method == "single":
+        df["ptot"] = ptot_single
+
+    # set static pressure
+    colname_static = prandtl_data['unit name static'] + '_' + str(prandtl_data['i_sens_static'])
+    df["pstat"] = df[colname_static]
+
+    """fig, ax = plt.subplots()
+
+    for i in range(32):
+        ax.plot(df["ptot_rake_{0}".format(i+1)], "b-")
+    ax.plot(df["static_K04_32"], "r-")
+    ax.plot(trimmed_median_ptot, "g-")
+    ax.plot(trimmed_average_ptot, "y-")"""
+
+    return df
+
+def calc_airspeed_wind(df, T, l_ref):
     """
     --> calculates wind component in free stream direction
 
@@ -300,11 +417,8 @@ def calc_airspeed_wind(df, prandtl_data, T, l_ref):
     :return: df         pandas DataFrame with wind component column
     """
 
-
-    colname_total = prandtl_data['unit name total'] + '_' + str(prandtl_data['i_sens_total'])
-    colname_static = prandtl_data['unit name static'] + '_' + str(prandtl_data['i_sens_static'])
-    ptot = df[colname_total]
-    pstat = df[colname_static]
+    ptot = df["ptot"]
+    pstat = df["pstat"]
 
     # density of air according to International Standard Atmosphere (ISA)
     rho_ISA = 1.225
@@ -324,28 +438,21 @@ def calc_airspeed_wind(df, prandtl_data, T, l_ref):
     #df['wind_component'] = df['U_TAS'] - df['U_GPS']
 
     return df
-def calc_cp(df, prandtl_data, pressure_data_ident_strings):
+
+def calc_cp(df, pressure_data_ident_strings):
     """
     calculates pressure coefficient for each static port on airfoil
 
     :param df:                          pandas DataFrame with synchronized and interpolated measurement data
-    :param prandtl_data:                dict with "unit name static", "i_sens_static", "unit name total" and
-                                        "i_sens_total".
-                                        This specifies the sensor units and the index of the sensors of the Prandtl
-                                        probe total
-                                        pressure sensor and the static pressure sensor
     :param pressure_data_ident_strings: list of strings, which are contained in column names, which identify
                                         pressure sensor data
     :return: df                         pandas DataFrame with pressure coefficient in "static_K0X_Y" columns for
                                         every
                                         measuring point
     """
-    # picks names of prandtl sensors
-    colname_total = prandtl_data['unit name total'] + '_' + str(prandtl_data['i_sens_total'])
-    colname_static = prandtl_data['unit name static'] + '_' + str(prandtl_data['i_sens_static'])
-    # picks columns with prandtl data
-    ptot = df[colname_total]
-    pstat = df[colname_static]
+
+    ptot = df["ptot"]
+    pstat = df["pstat"]
 
     # column names of all pressure sensor data
     pressure_cols = []
@@ -358,6 +465,7 @@ def calc_cp(df, prandtl_data, pressure_data_ident_strings):
     df.replace([np.inf, -np.inf], 0., inplace=True)
 
     return df
+
 def calc_cl_cm_cdp(df, df_airfoil, at_airfoil, flap_pivots=[], lambda_wall=0., sigma_wall=0., xi_wall=0.):
     """
 
@@ -436,7 +544,8 @@ def calc_cl_cm_cdp(df, df_airfoil, at_airfoil, flap_pivots=[], lambda_wall=0., s
     df.loc[:, sens_ident_cols] = (1 - 2 * lambda_wall * (sigma_wall + xi_wall) - sigma_wall) * df[sens_ident_cols]
 
     return df, sens_ident_cols, cp
-def calc_cd(df, l_ref, lambda_wall, sigma_wall, xi_wall):
+
+def calc_cd(df, l_ref, lambda_wall, sigma_wall, xi_wall, sensor_defective_mask):
     """
 
     :param df:
@@ -448,8 +557,8 @@ def calc_cd(df, l_ref, lambda_wall, sigma_wall, xi_wall):
 
     z_stat = np.linspace(-h_stat / 2, h_stat / 2, 5, endpoint=True)
     z_tot = np.linspace(-h_tot / 2, h_tot / 2, 32, endpoint=True)
-    # it is assumed, that 0th sensor is defective (omit that value)
-    z_tot = z_tot[1:]
+    # delete defective (leaky) sensors
+    z_tot = np.delete(z_tot, sensor_defective_mask)
 
     cp_stat_raw = df.filter(regex='^pstat_rake_').to_numpy()
     cp_stat_int = interpolate.interp1d(z_stat, cp_stat_raw, kind="linear", axis=1)
@@ -458,13 +567,13 @@ def calc_cd(df, l_ref, lambda_wall, sigma_wall, xi_wall):
 
     cp_tot = df.filter(regex='^ptot_rake_').to_numpy()
     # it is assumed, that 0th sensor is defective (omit that value)
-    cp_tot = cp_tot[:, 1:]
+    cp_tot = np.delete(cp_tot, sensor_defective_mask, axis=1)
 
     # Measurement of Proﬁle Drag by the Pitot-Traverse Method
     d_cd_jones = 2 * np.sqrt(np.abs((cp_tot - cp_stat))) * (1 - np.sqrt(np.abs(cp_tot)))
 
     # integrate integrand with simpson rule
-    cd = integrate.simpson(d_cd_jones, z_tot) * 1 / (l_ref*1000)
+    cd = integrate.trapezoid(d_cd_jones, z_tot) * 1 / (l_ref*1000)
 
     # apply wind tunnel wall corrections
     cd = cd * (1 - 2 * lambda_wall * (sigma_wall + xi_wall))
@@ -472,6 +581,7 @@ def calc_cd(df, l_ref, lambda_wall, sigma_wall, xi_wall):
     df["cd"] = cd
 
     return df
+
 def apply_calibration_offset(filename, df):
 
     with open(filename, "rb") as file:
@@ -493,6 +603,7 @@ def apply_calibration_offset(filename, df):
     df = df - df_calibr_pressures
 
     return df, l_ref
+
 def apply_calibration_20sec(df, calibration_output_filename="manual_calibration_data.p"):
     """
     uses first 20 seconds to calculate pressure sensor calibration offsets
@@ -519,6 +630,7 @@ def apply_calibration_20sec(df, calibration_output_filename="manual_calibration_
         pickle.dump(offsets, file)
 
     return df
+
 def apply_manual_calibration(df, calibration_filename="manual_calibration_data.p"):
     """
     uses first 20 seconds to calculate pressure sensor calibration offsets
@@ -533,13 +645,13 @@ def apply_manual_calibration(df, calibration_filename="manual_calibration_data.p
     df.iloc[:, :len(df.columns) - 6] = df.iloc[:, :len(df.columns) - 6] - offsets
 
     return df
-def calc_wall_correction_coefficients(df_airfoil, filepath, l_ref):
+
+def calc_wall_correction_coefficients(filepath, l_ref):
     """
     calculate wall correction coefficients according to
     Abbott and van Doenhoff 1945: Theory of Wing Sections
     and
     Althaus 2003: Tunnel-Wall Corrections at the Laminar Wind Tunnel
-    :param df_airfoil:      pandas dataframe with x and y position of airfoil contour
     :param df_cp:           pandas dataframe with cp values
     :return:                wall correction coefficients
     """
@@ -577,6 +689,7 @@ def calc_wall_correction_coefficients(df_airfoil, filepath, l_ref):
     xi_wall_corr = -0.00335 * l_ref**2
 
     return lambda_wall_corr, sigma_wall_corr, xi_wall_corr
+
 def plot_time_series(df_cp, df_p_abs, df_segments, U_cutoff=10, plot_drive=False, plot_pstat=False, unit_sens_pstat="static_K04_31", i_seg_plot=None):
     """
 
@@ -681,7 +794,8 @@ def plot_time_series(df_cp, df_p_abs, df_segments, U_cutoff=10, plot_drive=False
         labels.extend(label)
     host.tick_params(axis='x', labelrotation=80)
     fig.legend(lines, labels, loc='upper right')
-
+    plt.show(block=False)
+    plt.pause(0.01)
 
     """
     # plot path of car
@@ -689,7 +803,6 @@ def plot_time_series(df_cp, df_p_abs, df_segments, U_cutoff=10, plot_drive=False
     ax3.plot(df["Longitude"], df["Latitude"], "k-")
     ax3.plot(df.loc[df["U_CAS"] > 5, "Longitude"], df.loc[df["U_CAS"] > 5, "Latitude"], "g-")
     """
-
     """ax6.set_xlabel("$Time$")
     ax7.set_xlabel("Rake Position / Speed")
     ax6.set_ylabel("$c_d$")
@@ -700,7 +813,8 @@ def plot_time_series(df_cp, df_p_abs, df_segments, U_cutoff=10, plot_drive=False
     ax6.grid()"""
 
     return
-def plot_cp_x_and_wake(df, df_airfoil, at_airfoil, sens_ident_cols, df_segments, i_seg):
+
+def plot_cp_x_and_wake(df, df_airfoil, at_airfoil, sens_ident_cols, df_segments, df_polar, sensor_defective_mask):
     """
     plots cp(x) and wake depression (x) at certain operating points (alpha, Re and beta)
     :param df:      pandas dataframe with index time and data to be plotted
@@ -710,62 +824,90 @@ def plot_cp_x_and_wake(df, df_airfoil, at_airfoil, sens_ident_cols, df_segments,
     h_stat = 100
     h_tot = 93
 
-    t_start = np.abs(df_sync.index-df_segments.loc[i_seg, "start"]).argmin()
-    t_end = np.abs(df_sync.index-df_segments.loc[i_seg, "end"]).argmin()
-
-    # plot cp(x)
-    fig, ax = plt.subplots()
-    ax_cp = ax.twinx()
-    ax.plot(at_airfoil.coords[:, 0], at_airfoil.coords[:, 1], "k-")
-    ax.plot(df_airfoil["x"], df_airfoil["y"], "k.")
-    ax_cp.plot(df_airfoil["x"], df[sens_ident_cols].iloc[t_start:t_end].mean(), "r.-")
-    # Calculate mean values and standard deviations over the specified time interval
-    mean_cp_values = df[sens_ident_cols].iloc[t_start:t_end].mean()
-    std_cp_values = df[sens_ident_cols].iloc[t_start:t_end].std()
-    # Plot the mean cp values with error bars
-    ax_cp.errorbar(df_airfoil["x"], mean_cp_values, yerr=std_cp_values, fmt='r.-', ecolor='gray', elinewidth=1,capsize=2)
-    ylim_u, ylim_l = ax_cp.get_ylim()
-    ax_cp.set_ylim([ylim_l, ylim_u])
-    ax.set_xlabel("$x$")
-    ax.set_ylabel("$y$")
-    ax_cp.set_ylabel("$c_p$")
-    ax.set_title("Pressure distribution over airfoil")
-    ax_cp.grid()
-    ax.axis("equal")
-
-    # plot wake depression(x)
-    # extract total pressure of wake rake from dataframe
-    cols = df.columns.to_list()
-    cols = df.filter(regex='^ptot')
-    # it is assumed, that 0th sensor is defective (omit that value)
-    cols = cols.iloc[:, 1:]
-
     # positions of total pressure sensors of wake rake
     z_tot = np.linspace(-h_tot / 2, h_tot / 2, 32, endpoint=True);
     # it is assumed, that 0th sensor is defective (omit that value)
-    z_tot = z_tot[1:]
+    z_tot = np.delete(z_tot, sensor_defective_mask)
+
+    # positions of static pressure sensors of wake rake
+    z_stat = np.linspace(-h_stat / 2, h_stat / 2, 5, endpoint=True);
+
+    for i_seg in df_polar.index:
+
+        Re = df_polar.loc[i_seg, "Re"]
+        alpha = df_polar.loc[i_seg, "alpha"]
+        cl = df_polar.loc[i_seg, "cl"]
+        cd = df_polar.loc[i_seg, "cd"]
 
 
+        t_start = np.abs(df_sync.index-df_segments.loc[i_seg, "start"]).argmin()
+        t_end = np.abs(df_sync.index-df_segments.loc[i_seg, "end"]).argmin()
 
-    fig, ax = plt.subplots()
-    ax_cp = ax.twiny()
-    ax.plot(at_airfoil.coords[:, 0]*100, at_airfoil.coords[:, 1]*100, "k-")
-    ax_cp.plot(cols.iloc[t_start:t_end].mean(), z_tot, "r.-")
-    # Calculate mean and standard deviation over the specified time interval
-    mean_ptot_values = cols.iloc[t_start:t_end].mean()
-    std_ptot_values = cols.iloc[t_start:t_end].std()
-    # Plot the mean ptot values with error bars
-    ax_cp.errorbar(mean_ptot_values, z_tot, xerr=std_ptot_values, fmt='r.-', ecolor='gray', elinewidth=1, capsize=2)
-    ylim_l, ylim_u = ax_cp.get_ylim()
-    ax_cp.set_ylim([ylim_l, ylim_u])
-    ax.set_xlabel("$x$")
-    ax.set_ylabel("$z$")
-    ax_cp.set_xlabel("$c_p$")
-    ax.set_title("Wake Depression")
-    ax_cp.grid()
-    ax.axis("equal")
+        # plot cp(x)
+        fig, axes = plt.subplots(2, figsize=(6,12))
+        ax = axes[0]
+        ax_cp = ax.twinx()
+        ax.plot(at_airfoil.coords[:, 0], at_airfoil.coords[:, 1], "k-")
+        ax.plot(df_airfoil["x"], df_airfoil["y"], "k.")
+        ax_cp.plot(df_airfoil["x"], df[sens_ident_cols].iloc[t_start:t_end].mean(), "r.-")
+        # Calculate mean values and standard deviations over the specified time interval
+        mean_cp_values = df[sens_ident_cols].iloc[t_start:t_end].mean()
+        std_cp_values = df[sens_ident_cols].iloc[t_start:t_end].std()
+        # Plot the mean cp values with error bars
+        ax_cp.errorbar(df_airfoil["x"], mean_cp_values, yerr=std_cp_values, fmt='r.-', ecolor='gray', elinewidth=1,capsize=2)
+        ylim_u, ylim_l = ax_cp.get_ylim()
+        ax_cp.set_ylim([ylim_l, ylim_u])
+        ax.set_xlabel("$x$")
+        ax.set_ylabel("$y$")
+        ax_cp.set_ylabel("$c_p$")
+        fig.suptitle(r"$i_\mathrm{{seg}}={}:~Re={:.2E}~cl={:.2f}~cd={:.4f}~\alpha={:.2f}$".format(i_seg+1, Re, cl, cd, alpha))
+        ax_cp.grid()
+        ax.axis("equal")
+
+        # plot wake depression(x)
+        # extract total pressure of wake rake from dataframe
+        cols = df.filter(regex='^ptot_rake')
+
+        # drop erroneous pressure sensors
+        cols_tot = cols.drop(cols.columns[sensor_defective_mask], axis=1)
+        # data of static pressure sensor
+        cols_stat = df.filter(regex='^pstat_rake')
+        ax = axes[1]
+        ax_cp = ax.twiny()
+        # plot airfoil for visualization
+        ax.plot(at_airfoil.coords[:, 0]*100, at_airfoil.coords[:, 1]*100, "k-")
+        # Calculate mean and standard deviation over the specified time interval
+        mean_ptot_values = cols_tot.iloc[t_start:t_end].mean()
+        std_ptot_values = cols_tot.iloc[t_start:t_end].std()
+        mean_pstat_values = cols_stat.iloc[t_start:t_end].mean()
+        std_pstat_values = cols_stat.iloc[t_start:t_end].std()
+        # Plot the mean ptot values with error bars
+        ax_cp.plot(mean_ptot_values, z_tot, "r.-")
+        ax_cp.errorbar(mean_ptot_values, z_tot, xerr=std_ptot_values, fmt='r.-', ecolor='gray', elinewidth=1, capsize=2)
+        # Plot the mean pstat values with error bars
+        ax_cp.plot(mean_pstat_values, z_stat, "b.-")
+        ax_cp.errorbar(mean_pstat_values, z_stat, xerr=std_pstat_values, fmt='b.-', ecolor='gray', elinewidth=1, capsize=2)
+        ylim_l, ylim_u = ax_cp.get_ylim()
+        ax_cp.set_ylim([ylim_l, ylim_u])
+        ax.set_xlabel("$x$")
+        ax.set_ylabel("$z$")
+        ax_cp.set_xlabel("$c_p$")
+        ax_cp.grid()
+        ax.axis("equal")
+        fig.tight_layout()
+        plt.pause(0.01)
+
+        # write cp to file
+        filename = "C:/XFOIL6.99/{0}_Re{1:.2E}_cl{2:.2f}_alpha{3:.2f}.cp".format(at_airfoil.filename.split(".dat")[0], Re, cl, alpha)
+        cp_offset = 0.15
+        x_vals = df_airfoil["x"].to_numpy()
+        cp_vals = df[sens_ident_cols].iloc[t_start:t_end].mean()
+        x_cp = np.vstack((x_vals, cp_vals + cp_offset)).T
+
+        np.savetxt(filename, x_cp, header="     x          Cp  ", fmt="%.5f")
 
     return
+
 def plot_3D(df):
     """
 
@@ -801,6 +943,7 @@ def plot_3D(df):
 
 
     return
+
 def calc_mean(df, alpha, Re):
 
     """calculates mean values of AOA, lift-, drag- and moment coefficients for a given alpha (automativally given from
@@ -840,14 +983,15 @@ def calc_mean(df, alpha, Re):
     mean_cm = col_cm.mean()
 
     return mean_alpha, mean_cl, mean_cd, mean_cm
+
 def prepare_polar_df(df_sync, df_segments):
     """
     iterates over alpha [1,17] deg and calculates to each alpha the mean values of cl, cd and cm; if alpha and Re
     criteria are not fulfilled, moves on to next alpha value
-    :param df_sync:                  pandas dataframe with all data to be plotted
+    :param df_sync:             pandas dataframe with all data to be plotted
     :param alpha_range:         AOA interval for polar
     :param Re:                  desired Reynoldsnumber for polar
-    :return: df_polars            df with polar values ready to be plotted
+    :return: df_polars          df with polar values ready to be plotted
     """
     # create a new dataframe with specified column names
     cols = ["alpha", "Re", "U_CAS", "U_TAS", "cl", "cd", "cdp", "cm", "cmr_LE", "cmr_TE"]
@@ -866,6 +1010,7 @@ def prepare_polar_df(df_sync, df_segments):
     df_polar = pd.DataFrame(data, columns=cols)
 
     return df_polar
+
 def plot_polars(df):
     """
 
@@ -907,6 +1052,7 @@ def plot_polars(df):
 
 
     return
+
 def cumulative_average(df, df_segments, i_seg):
     '''
     visualizes the cumulative average over time in order to analyze if the sweep time is sufficient or not
@@ -943,23 +1089,46 @@ def cumulative_average(df, df_segments, i_seg):
 
 if __name__ == '__main__':
 
+    plot = True
+
     T_air = 288
     # Lower cutoff speed for plots
     U_cutoff = 10
     # specify test segment, which should be plotted
-    i_seg_plot = 5
+    i_seg_plot = 16
 
-    airfoil = "Mü13-33"
+    # lower and upper cutoff fraction for asymmetric trimmed mean calculation for reference total pressure
+    lower_frac_ptot = 0.05
+    upper_frac_ptot = 0.5
+
+    PPAX = dict()
+    PPAX['CLmin'] = 0.0
+    PPAX['CLmax'] = 2.000
+    PPAX['CLdel'] = 0.5000
+    PPAX['CDmin'] = 0.0000
+    PPAX['CDmax'] = 0.0250
+    PPAX['CDdel'] = 0.0050
+    PPAX['ALmin'] = 0.0000
+    PPAX['ALmax'] = 15.0000
+    PPAX['ALdel'] = 2.0000
+    PPAX['CMmin'] = -0.2500
+    PPAX['CMmax'] = 0.000
+    PPAX['CMdel'] = 0.0500
+
+
+    #airfoil = "Mü13-33"
     #airfoil = "B200"
+    airfoil = "B200_topseal"
     # constants and input data
     if airfoil == "Mü13-33":
+        sensor_defective_mask = [0, ]
         l_ref = 0.7
         flap_pivots = np.array([[0.2, 0.0], [0.8, 0.0]])
         eta_LE_flap = 0.0
         # specifiy, if drive data should be synchronized
         sync_drive = False
         # Raw data file prefix
-        seg_def_files = ["T007.xlsx"]
+        seg_def_files = ["T009.xlsx"]
         digitized_LWK_polar_files_clcd = ["Re1e6_cl-cd.txt"]
         digitized_LWK_polar_files_clalpha = ["Re1e6_cl-alpha.txt"]
         XFOIL_polar_files = []
@@ -976,8 +1145,8 @@ if __name__ == '__main__':
             digitized_LWK_polar_dir = "D:/Python_Codes/Rohdateien/digitized_polars_doeller"
             ref_dat_path = "D:/Python_Codes/Workingdirectory_Auswertung/"
         prandtl_data = {"unit name static": "static_K04", "i_sens_static": 31,
-                        "unit name total": "ptot_rake", "i_sens_total": 3} # This is the third sensor in the wake rake
-                        #"unit name total": "static_K04", "i_sens_total": 32} # This is the original total pressure sensor
+                        #"unit name total": "ptot_rake", "i_sens_total": 3} # This is the third sensor in the wake rake
+                        "unit name total": "static_K04", "i_sens_total": 32} # This is the original total pressure sensor
 
         foil_coord_path = os.path.join(ref_dat_path, "mue13-33-le15.dat")
         file_path_msr_pts = os.path.join(ref_dat_path, 'Messpunkte Demonstrator_Mue13-33.xlsx')
@@ -985,23 +1154,45 @@ if __name__ == '__main__':
         cp_path_wall_correction = os.path.join(ref_dat_path, 'mue13-33-le15-tgap0_14.cp')
         # alpha sensor offset
         alpha_sens_offset = 214.73876953125
+
+        calibration_filename = '20240613-2336_manual_calibration_data.p'
     elif airfoil == "B200":
+
+        #run = "T006"
+        #run = "T010"
+        run = "T012"
+
         l_ref = 0.5
         flap_pivots = np.array([[0.325, 0.0], [0.87, -0.004]])
         # specifiy, if drive data should be synchronized
         sync_drive = True
 
-        #seg_def_files = ["T006.xlsx"]
-        #XFOIL_polar_files = ["B200-0_reinit_Re11e5_XFOILSUC.pol"]
-        #WDIR = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/B200/2023_09_26/T6"
+        if run == "T006":
+            seg_def_files = ["T006.xlsx"]
+            XFOIL_polar_files = ["B200-0_reinit_Re11e5_XFOILSUC.pol"]
+            WDIR = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/B200/2023_09_26/T6"
+            sensor_defective_mask = [0, 24]
+            prandtl_data = {"unit name static": "static_K04", "i_sens_static": 31,
+                            "unit name total": "ptot_rake", "i_sens_total": 3}
+            # "unit name total": "static_K04", "i_sens_total": 32}
 
-        # seg_def_files = ["T010.xlsx"]
-        # XFOIL_polar_files = ["B200_5deg_reinitialized_Re1_08.pol"]
-        # WDIR = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/B200/2023_09_26/T10_R012"
+        if run == "T010":
+            seg_def_files = ["T010.xlsx"]
+            XFOIL_polar_files = ["B200_5deg_reinitialized_Re1_08.pol"]
+            WDIR = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/B200/2023_09_26/T10_R012"
+            sensor_defective_mask = [0, 24]
+            prandtl_data = {"unit name static": "static_K04", "i_sens_static": 31,
+                            "unit name total": "ptot_rake", "i_sens_total": 30}
+            # "unit name total": "static_K04", "i_sens_total": 32}
 
-        seg_def_files = ["T012.xlsx"]
-        XFOIL_polar_files = ["B200-1_reinit_Re1e6_XFOIL_HLIDP.pol", "B200-1_reinit_Re1e6_XFOIL_HLIDP_xtr0_325.pol"]
-        WDIR = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/B200/2023_08_03/R003_20deg_clmax"
+        if run == "T012":
+            seg_def_files = ["T012.xlsx"]
+            XFOIL_polar_files = ["B200-1_reinit_Re1e6_XFOIL_HLIDP.pol", "B200-1_reinit_Re1e6_XFOIL_HLIDP_xtr0_325.pol"]
+            WDIR = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/B200/2023_08_03/R003_20deg_clmax"
+            sensor_defective_mask = [0, 24]
+            prandtl_data = {"unit name static": "static_K04", "i_sens_static": 31,
+                            "unit name total": "ptot_rake", "i_sens_total": 3}
+            # "unit name total": "static_K04", "i_sens_total": 32}
 
         digitized_LWK_polar_files_clcd = []
         digitized_LWK_polar_files_clalpha = []
@@ -1017,16 +1208,87 @@ if __name__ == '__main__':
         pickle_path_msr_pts = os.path.join(ref_dat_path, 'Messpunkte Demonstrator.p')
         cp_path_wall_correction = os.path.join(ref_dat_path, 'B200-0_reinitialized.cp')
         # alpha sensor offset
-        alpha_sens_offset = 162.88330078125
+        alpha_sens_offset = 162.88330078125 # Campaign 1
+
+        calibration_filename = '20240613-2336_manual_calibration_data.p' # TODO: Change to current calibration
+    elif airfoil == "B200_topseal":
+        #run = "T010_R23"
+        #run = "T006_R24"
+        #run = "T006_R26"
+        run = "T012_R27"
+
+        # it is assumed, that 0th, 24th and 30th total wake pressure sensors are leaky (drop the values)
+
+
+        l_ref = 0.5
+        flap_pivots = np.array([[0.325, 0.09], [0.87, -0.004]])
+        # specifiy, if drive data should be synchronized
+        sync_drive = True
+
+
+        if run == "T010_R23":
+            sensor_defective_mask = [0, 24, 30]
+            seg_def_files = ["T010_R023.xlsx"]
+            XFOIL_polar_files = ["B200-LE2deg_reinitialized_TE0_from1_Re1e6_XFOILSUC.pol"]
+            WDIR = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/B200/2025_05_20/R023/"
+            prandtl_data = {"unit name static": "static_K04", "i_sens_static": 31,
+                            "unit name total": "ptot_rake", "i_sens_total": 2}
+                            # "unit name total": "static_K04", "i_sens_total": 32}
+
+        if run == "T006_R24":
+            sensor_defective_mask = [0, 8, 24, 30]
+            seg_def_files = ["T006_R024.xlsx"]
+            XFOIL_polar_files = ["B200-0_Re1e6_XFOILSUC.pol", "B200-0_reinitialized_from1_Re1e6_XFOILSUC.pol"]
+            WDIR = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/B200/2025_05_20/R024/"
+            prandtl_data = {"unit name static": "static_K04", "i_sens_static": 31,
+                            "unit name total": "ptot_rake", "i_sens_total": 2}
+                            # "unit name total": "static_K04", "i_sens_total": 32}
+
+        if run == "T006_R26":
+            sensor_defective_mask = [0, 24, 30]
+            seg_def_files = ["T006_R026.xlsx"]
+            XFOIL_polar_files = ["B200-0_reinitialized_from1_Re75e4_XFOILSUC.pol", "B200-0_reinitialized_from1_Re75e4_XFOIL_mod.pol"]
+            WDIR = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/B200/2025_05_20/R026/"
+            prandtl_data = {"unit name static": "static_K04", "i_sens_static": 31,
+                            "unit name total": "ptot_rake", "i_sens_total": 2}
+                            # "unit name total": "static_K04", "i_sens_total": 32}
+
+            PPAX['ALmin'] = -2.0000
+            PPAX['ALmax'] = 18.0000
+            PPAX['ALdel'] = 5.0000
+
+        if run == "T012_R27":
+            sensor_defective_mask = [0, 24, 30]
+            seg_def_files = ["T012_R027.xlsx"]
+            XFOIL_polar_files = ["B200-1_reinit_Re1e6_XFOIL_HLIDP.pol", "B200-1_reinit_Re1e6_XFOIL_HLIDP_xtr0_325.pol", "B200-1_reinit_Re1e6_XFOIL_HLIDP_turb.pol"]
+            WDIR = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/B200/2025_05_20/R027/"
+            prandtl_data = {"unit name static": "static_K04", "i_sens_static": 31,
+                            "unit name total": "ptot_rake", "i_sens_total": 2}
+                            # "unit name total": "static_K04", "i_sens_total": 32}
+
+            PPAX['ALmin'] = -2.0000
+            PPAX['ALmax'] = 18.0000
+            PPAX['ALdel'] = 5.0000
+
+
+        digitized_LWK_polar_files_clcd = []
+        digitized_LWK_polar_files_clalpha = []
+        segments_def_dir = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/B200/Testsegments_specification"
+        digitized_LWK_polar_dir = ""
+        ref_dat_path = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/B200/01_Reference Data/"
+
+
+        foil_coord_path = os.path.join(ref_dat_path, "B200-0_reinitialized.dat")
+        file_path_msr_pts = os.path.join('C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/03_Static pressure measurement system/Messpunkte Demonstrator/Messpunkte Demonstrator-17.05.2025.xlsx')
+        pickle_path_msr_pts = os.path.join(ref_dat_path, 'Messpunkte Demonstrator.p')
+        cp_path_wall_correction = os.path.join(ref_dat_path, 'B200-0_reinitialized.cp')
+
+        alpha_sens_offset = 272.96630859375  # Campaign 2
+
+        calibration_filename = '20250521-0043_sensor_calibration_data.p'
 
     #******************************************************************************************************************
     #******************************************************************************************************************
-
-
-
-    calibration_filename = '20240613-2336_manual_calibration_data.p'
-
-
     #******************************************************************************************************************
     #******************************************************************************************************************
 
@@ -1081,11 +1343,11 @@ if __name__ == '__main__':
         df_segments = df_segments[['start', 'end']]
 
         # read airfoil data
-        df_airfoil, airfoil = read_airfoil_geometry(file_path_msr_pts, c=l_ref, foil_source=foil_coord_path,
+        df_airfoil, at_airfoil = read_airfoil_geometry(file_path_msr_pts, c=l_ref, foil_source=foil_coord_path,
                                                     eta_LE_flap=eta_LE_flap, eta_TE_flap=eta_TE_flap,
                                                     flap_pivots=flap_pivots, pickle_file=pickle_path_msr_pts)
         # calculate wall correction coefficients
-        lambda_wall, sigma_wall, xi_wall = calc_wall_correction_coefficients(df_airfoil, cp_path_wall_correction, l_ref)
+        lambda_wall, sigma_wall, xi_wall = calc_wall_correction_coefficients(cp_path_wall_correction, l_ref)
 
         df_sync=pd.DataFrame()
         list_of_dfs = []
@@ -1108,15 +1370,16 @@ if __name__ == '__main__':
 
             # read sensor data
             GPS = read_GPS(file_path_GPS)
-            if sync_drive:
-                drive = read_drive(file_path_drive, t0=GPS["Time"].iloc[0])
 
-            alphas = read_AOA_file(file_path_AOA, sigma_wall, t0=GPS["Time"].iloc[0], alpha_sens_offset=alpha_sens_offset)
+            alphas, delta_t_GPS_PC = read_AOA_file(file_path_AOA, sigma_wall, t0=GPS["Time"].iloc[0], alpha_sens_offset=alpha_sens_offset)
             pstat_K02 = read_DLR_pressure_scanner_file(file_path_pstat_K02, n_sens=32, t0=GPS["Time"].iloc[0])
             pstat_K03 = read_DLR_pressure_scanner_file(file_path_pstat_K03, n_sens=32, t0=GPS["Time"].iloc[0])
             pstat_K04 = read_DLR_pressure_scanner_file(file_path_pstat_K04, n_sens=32, t0=GPS["Time"].iloc[0])
             ptot_rake = read_DLR_pressure_scanner_file(file_path_ptot_rake, n_sens=32, t0=GPS["Time"].iloc[0])
             pstat_rake = read_DLR_pressure_scanner_file(file_path_pstat_rake, n_sens=5, t0=GPS["Time"].iloc[0])
+
+            if sync_drive:
+                drive = read_drive(file_path_drive, t0=GPS["Time"].iloc[0], delta_t=delta_t_GPS_PC)
 
             # synchronize sensor data
             if sync_drive:
@@ -1132,7 +1395,7 @@ if __name__ == '__main__':
                 # apply calibration offset from first 20 seconds
                 df_sync = apply_calibration_20sec(df_sync)
             elif calibration_type == "manual":
-                df_sync = apply_manual_calibration(df_sync, calibration_filename)
+                df_sync = apply_manual_calibration(df_sync, calibration_filename="manual_calibration_data.p")
             else:
                 raise ValueError("wrong parameter 'calibration_type' passed. Either 'file', '20sec' or 'manual'")
 
@@ -1142,34 +1405,43 @@ if __name__ == '__main__':
         if len(raw_data_filenames) > 1:
             df_sync = pd.concat(list_of_dfs)
 
+        # calculate total reference pressure
+        ptot_method = "trimmed median"
+        #ptot_method = "trimmed average"
+        #ptot_method = "single"
+        df_sync = calc_ptot_pstat(df_sync, sensor_defective_mask, prandtl_data, total_ref_pressure_method=ptot_method)
+
         # calculate wind component
-        df_sync = calc_airspeed_wind(df_sync, prandtl_data, T_air, l_ref)
+        df_sync = calc_airspeed_wind(df_sync, T_air, l_ref)
 
         # calculate pressure coefficients
         df_p_abs = copy.deepcopy(df_sync)
-        df_sync = calc_cp(df_sync, prandtl_data, pressure_data_ident_strings=['stat', 'ptot'])
+        df_sync = calc_cp(df_sync, pressure_data_ident_strings=['stat', 'ptot'])
 
         # calculate lift coefficients
-        df_sync, sens_ident_cols, cp = calc_cl_cm_cdp(df_sync, df_airfoil, airfoil, flap_pivots, lambda_wall, sigma_wall, xi_wall)
+        df_sync, sens_ident_cols, cp = calc_cl_cm_cdp(df_sync, df_airfoil, at_airfoil, flap_pivots, lambda_wall, sigma_wall, xi_wall)
 
         # calculate drag coefficients
-        df_sync = calc_cd(df_sync, l_ref, lambda_wall, sigma_wall, xi_wall)
+        df_sync = calc_cd(df_sync, l_ref, lambda_wall, sigma_wall, xi_wall, sensor_defective_mask)
 
-        # visualisation
-        plot_time_series(df_sync, df_p_abs, df_segments, U_cutoff, plot_drive=sync_drive, i_seg_plot=i_seg_plot)
-        #plot_3D(df_sync_cp)
-        plot_cp_x_and_wake(df_sync, df_airfoil, airfoil, sens_ident_cols, df_segments, i_seg_plot) # df_sync_cp.index.get_loc(pd.Timestamp('2024-06-13 23:38:00'))
+        # visualisation of time series
+        if plot:
+            plot_time_series(df_sync, df_p_abs, df_segments, U_cutoff, plot_drive=sync_drive, i_seg_plot=i_seg_plot)
 
-
+        # generate the polar
         df_polar = prepare_polar_df(df_sync, df_segments)
         list_of_df_polars.append(df_polar)
 
+        # plot cp(x) and cp wake
+        if plot:
+            plot_cp_x_and_wake(df_sync, df_airfoil, at_airfoil, sens_ident_cols, df_segments, df_polar, sensor_defective_mask)
 
         # Generate PolarTool polar
-        Re_mean = np.around(df_polar.loc[:25, "Re"].mean() / 1e5)*1e5
+        Re_mean = np.around(df_polar.loc[:, "Re"].mean() / 1e5)*1e5
         polar = at.PolarTool(name="Automobile wind tunnel", Re=Re_mean, flapangle=eta_TE_flap, WindtunnelName="MoProMa-Car")
         polar.parseMoProMa_Polar(df_polar)
         list_of_polars.append(polar)
+        polar.writeXFoilPol("C:/XFOIL6.99", "MoProMa_Polar.pol")
 
 
     # read measured polar from LWK Stuttgart, digitized with getData graph digitizer
@@ -1185,19 +1457,7 @@ if __name__ == '__main__':
         XFOIL_polars[-1].ImportXFoilPolar(os.path.join(ref_dat_path, XFOIL_polar_file))
         XFOIL_polars[-1].name = "XFOILSUC-mod"
 
-    PPAX = dict()
-    PPAX['CLmin'] = 0.0
-    PPAX['CLmax'] = 2.000
-    PPAX['CLdel'] = 0.5000
-    PPAX['CDmin'] = 0.0000
-    PPAX['CDmax'] = 0.0250
-    PPAX['CDdel'] = 0.0050
-    PPAX['ALmin'] = 0.0000
-    PPAX['ALmax'] = 25.0000
-    PPAX['ALdel'] = 2.0000
-    PPAX['CMmin'] = -0.2500
-    PPAX['CMmax'] = 0.000
-    PPAX['CMdel'] = 0.0500
+
 
     LineAppearance = dict()
 
@@ -1252,17 +1512,19 @@ if __name__ == '__main__':
             LineAppearance['linestyle'][i_line] = "-"
             i_line += 1
 
-
-
-    altsort_polars[0].plotPolar(additionalPolars=altsort_polars[1:], PPAX=PPAX, Colorplot=True,
-                                LineAppearance=LineAppearance, highlight=i_seg_plot)
+    if plot:
+        altsort_polars[0].plotPolar(additionalPolars=altsort_polars[1:], PPAX=PPAX, Colorplot=True,
+                                    LineAppearance=LineAppearance, highlight=i_seg_plot)
     altsort_polars[0].plotPolar(additionalPolars=altsort_polars[1:], PPAX=PPAX, Colorplot=True,
                                 LineAppearance=LineAppearance, saveFlag=True, format="pdf",
                                 saveFileName=seg_def_files[0].rstrip(".xlsx"))
 
-    cumulative_average(df_sync, df_segments, i_seg_plot)
+    # export polar
+    altsort_polars[0].writeXFoilPol("C:/XFOIL6.99", airfoil+run+".pol")
 
-    plt.show()
+    """if plot:
+        cumulative_average(df_sync, df_segments, i_seg_plot)"""
+
     print("done")
 
 
