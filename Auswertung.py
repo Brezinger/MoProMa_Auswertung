@@ -604,7 +604,7 @@ def apply_calibration_offset(filename, df):
 
     return df, l_ref
 
-def apply_calibration_20sec(df, calibration_output_filename="manual_calibration_data.p"):
+def apply_calibration_20sec(df):
     """
     uses first 20 seconds to calculate pressure sensor calibration offsets
     :param df:
@@ -625,9 +625,6 @@ def apply_calibration_20sec(df, calibration_output_filename="manual_calibration_
 
     # Apply the calibration to the entire DataFrame
     df.iloc[:, :len(df.columns)-6] = df.iloc[:, :len(df.columns)-6] - offsets
-
-    with open(calibration_output_filename, "wb") as file:
-        pickle.dump(offsets, file)
 
     return df
 
@@ -1128,7 +1125,7 @@ if __name__ == '__main__':
         # specifiy, if drive data should be synchronized
         sync_drive = False
         # Raw data file prefix
-        seg_def_files = ["T009.xlsx"]
+        seg_def_files = ["T007.xlsx"]
         digitized_LWK_polar_files_clcd = ["Re1e6_cl-cd.txt"]
         digitized_LWK_polar_files_clalpha = ["Re1e6_cl-alpha.txt"]
         XFOIL_polar_files = []
@@ -1212,10 +1209,10 @@ if __name__ == '__main__':
 
         calibration_filename = '20240613-2336_manual_calibration_data.p' # TODO: Change to current calibration
     elif airfoil == "B200_topseal":
-        #run = "T010_R23"
+        run = "T010_R23"
         #run = "T006_R24"
         #run = "T006_R26"
-        run = "T012_R27"
+        #run = "T012_R27"
 
         # it is assumed, that 0th, 24th and 30th total wake pressure sensors are leaky (drop the values)
 
@@ -1224,7 +1221,6 @@ if __name__ == '__main__':
         flap_pivots = np.array([[0.325, 0.09], [0.87, -0.004]])
         # specifiy, if drive data should be synchronized
         sync_drive = True
-
 
         if run == "T010_R23":
             sensor_defective_mask = [0, 24, 30]
@@ -1258,9 +1254,9 @@ if __name__ == '__main__':
             PPAX['ALdel'] = 5.0000
 
         if run == "T012_R27":
-            sensor_defective_mask = [0, 24, 30]
+            sensor_defective_mask = [0, 1, 24, 25, 30]
             seg_def_files = ["T012_R027.xlsx"]
-            XFOIL_polar_files = ["B200-1_reinit_Re1e6_XFOIL_HLIDP.pol", "B200-1_reinit_Re1e6_XFOIL_HLIDP_xtr0_325.pol", "B200-1_reinit_Re1e6_XFOIL_HLIDP_turb.pol"]
+            XFOIL_polar_files = ["B200-1_xtr0_325_Re95e4_XFOIL_HLIDP.pol", "B200-1_xtrb0_325_Re95e4_XFOIL_HLIDP.pol", "B200-1_xtrt0_325_Re95e4_XFOIL_HLIDP.pol", "B200-1_Re95e4_XFOIL_HLIDP.pol", "B200-1_Re95e4_XFOILSUC_mod.pol"]
             WDIR = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/B200/2025_05_20/R027/"
             prandtl_data = {"unit name static": "static_K04", "i_sens_static": 31,
                             "unit name total": "ptot_rake", "i_sens_total": 2}
@@ -1269,7 +1265,6 @@ if __name__ == '__main__':
             PPAX['ALmin'] = -2.0000
             PPAX['ALmax'] = 18.0000
             PPAX['ALdel'] = 5.0000
-
 
         digitized_LWK_polar_files_clcd = []
         digitized_LWK_polar_files_clalpha = []
@@ -1314,17 +1309,11 @@ if __name__ == '__main__':
             "str").flatten()
         calibration_types = pd.read_excel(segments_def_path, skiprows=0, usecols="K").dropna().values.astype(
             "str").flatten()
-        eta_TE_flap = pd.read_excel(segments_def_path, skiprows=0, usecols="L").dropna().values.astype(
+        etas_TE_flap = pd.read_excel(segments_def_path, skiprows=0, usecols="L").dropna().values.astype(
             "float").flatten()
-        eta_LE_flap = pd.read_excel(segments_def_path, skiprows=0, usecols="M").dropna().values.astype(
+        etas_LE_flap = pd.read_excel(segments_def_path, skiprows=0, usecols="M").dropna().values.astype(
             "float").flatten()
-        eta_TE_flap = eta_TE_flap[i_file]
-        if len(eta_LE_flap) == len(seg_def_files):
-            eta_LE_flap = eta_LE_flap[i_file]
-        else:
-            eta_LE_flap = 0
 
-        list_of_eta_flaps.append(eta_TE_flap)
         # read segment times
         df_segments = pd.read_excel(segments_def_path, skiprows=1, usecols="A:H").ffill(axis=0)
         df_segments[["hh", "mm", "ss", "hh.1", "mm.1", "ss.1"]] = df_segments[["hh", "mm", "ss", "hh.1", "mm.1", "ss.1"]].astype(int)
@@ -1342,17 +1331,28 @@ if __name__ == '__main__':
 
         df_segments = df_segments[['start', 'end']]
 
-        # read airfoil data
-        df_airfoil, at_airfoil = read_airfoil_geometry(file_path_msr_pts, c=l_ref, foil_source=foil_coord_path,
-                                                    eta_LE_flap=eta_LE_flap, eta_TE_flap=eta_TE_flap,
-                                                    flap_pivots=flap_pivots, pickle_file=pickle_path_msr_pts)
-        # calculate wall correction coefficients
-        lambda_wall, sigma_wall, xi_wall = calc_wall_correction_coefficients(cp_path_wall_correction, l_ref)
-
-        df_sync=pd.DataFrame()
+        df_sync = pd.DataFrame()
         list_of_dfs = []
 
         for i, filename in enumerate(raw_data_filenames):
+            eta_TE_flap = etas_TE_flap[i]
+            list_of_eta_flaps.append(eta_TE_flap)
+            if len(etas_LE_flap) == len(raw_data_filenames):
+                eta_LE_flap = etas_LE_flap[i]
+            elif etas_LE_flap.size > 0:
+                eta_LE_flap = etas_LE_flap[0]
+            else:
+                eta_LE_flap = 0
+
+                # read airfoil data
+            if i == 0 or not (etas_TE_flap == etas_TE_flap[0]).all() or not (etas_LE_flap == etas_LE_flap[0]).all():
+                df_airfoil, at_airfoil = read_airfoil_geometry(file_path_msr_pts, c=l_ref, foil_source=foil_coord_path,
+                                                            eta_LE_flap=eta_LE_flap, eta_TE_flap=eta_TE_flap,
+                                                            flap_pivots=flap_pivots, pickle_file=pickle_path_msr_pts)
+
+            # calculate wall correction coefficients
+            lambda_wall, sigma_wall, xi_wall = calc_wall_correction_coefficients(cp_path_wall_correction, l_ref)
+
             calibration_type = calibration_types[i]
             if calibration_type not in ["file", "20sec"]:
                 calibration_filename = calibration_type
@@ -1437,12 +1437,11 @@ if __name__ == '__main__':
             plot_cp_x_and_wake(df_sync, df_airfoil, at_airfoil, sens_ident_cols, df_segments, df_polar, sensor_defective_mask)
 
         # Generate PolarTool polar
-        Re_mean = np.around(df_polar.loc[:, "Re"].mean() / 1e5)*1e5
+        Re_mean = np.around(df_polar.loc[:, "Re"].mean() / 5e4)*5e4
         polar = at.PolarTool(name="Automobile wind tunnel", Re=Re_mean, flapangle=eta_TE_flap, WindtunnelName="MoProMa-Car")
         polar.parseMoProMa_Polar(df_polar)
         list_of_polars.append(polar)
         polar.writeXFoilPol("C:/XFOIL6.99", "MoProMa_Polar.pol")
-
 
     # read measured polar from LWK Stuttgart, digitized with getData graph digitizer
     polarsStu = list()
@@ -1454,10 +1453,11 @@ if __name__ == '__main__':
     XFOIL_polars = list()
     for XFOIL_polar_file in XFOIL_polar_files:
         XFOIL_polars.append(at.PolarTool(name="XFOILSUC-mod", flapangle=eta_TE_flap))
-        XFOIL_polars[-1].ImportXFoilPolar(os.path.join(ref_dat_path, XFOIL_polar_file))
-        XFOIL_polars[-1].name = "XFOILSUC-mod"
-
-
+        XFOIL_polars[-1].ImportXFoilPolar(os.path.join(ref_dat_path, XFOIL_polar_file), drag_correction_factor=1.12)
+        if "XFOIL_HLIDP" in XFOIL_polar_file:
+            XFOIL_polars[-1].name = "XFOIL-mod"
+        elif "XFOILSUC" in XFOIL_polar_file:
+            XFOIL_polars[-1].name = "XFOILSUC-mod"
 
     LineAppearance = dict()
 
@@ -1520,7 +1520,9 @@ if __name__ == '__main__':
                                 saveFileName=seg_def_files[0].rstrip(".xlsx"))
 
     # export polar
-    altsort_polars[0].writeXFoilPol("C:/XFOIL6.99", airfoil+run+".pol")
+    if not "run" in locals():
+        run = ""
+    altsort_polars[0].writeXFoilPol("C:/XFOIL6.99", airfoil+".pol")
 
     """if plot:
         cumulative_average(df_sync, df_segments, i_seg_plot)"""
