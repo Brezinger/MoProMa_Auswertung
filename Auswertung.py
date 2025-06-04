@@ -7,6 +7,7 @@ Created on Mon Apr 29 11:21:04 2024
 import copy
 import sys
 import os
+import re
 import pickle
 import numpy as np
 import pandas as pd
@@ -286,6 +287,33 @@ def synchronize_data(merge_dfs_list):
 
     return merged_df
 
+def filter_data(df_sync):
+    """
+    applies savitzky golay filter to pressure data
+    :param df_sync:
+    :return:
+    """
+    # Build pattern and find matching columns
+    patterns = [
+        r'^pstat_rake_\d+$',
+        r'^ptot_rake_\d+$',
+        r'^static_K02_\d+$',
+        r'^static_K03_\d+$',
+        r'^static_K04_\d+$'
+    ]
+    combined_pattern = '|'.join(patterns)
+    columns_to_filter = [col for col in df_sync.columns if re.match(combined_pattern, col)]
+
+    # Set filter parameters
+    window_length = 201
+    polyorder = 2
+
+    # Apply filter
+    for col in columns_to_filter:
+        df_sync[col] = savgol_filter(df_sync[col], window_length=window_length, polyorder=polyorder)
+
+    return df_sync
+
 def read_airfoil_geometry(filename, c, foil_source, eta_TE_flap, eta_LE_flap, flap_pivots, pickle_file=""):
     """
     --> searchs for pickle file in WD, if not found it creates a new pickle file
@@ -364,13 +392,13 @@ def calc_ptot_pstat(df, sensor_defective_mask, prandtl_data, total_ref_pressure_
     (cutoff of 5%, i.e. highest pressure and 50% lowest pressures)
     :param df:
     :param sensor_defective_mask:
-    :param prandtl_data:            dict with "unit name static", "i_sens_static", "unit name total" and
-                                    "i_sens_total".
-                                    This specifies the sensor units and the index of the sensors of the Prandtl
-                                    probe total
-                                    pressure sensor and the static pressure sensor
-    :param method:                  str, determines method of total reference pressure calculation. One of:
-                                    "trimmed median", "trimmed average", "single
+    :param prandtl_data:                dict with "unit name static", "i_sens_static", "unit name total" and
+                                        "i_sens_total".
+                                        This specifies the sensor units and the index of the sensors of the Prandtl
+                                        probe total
+                                        pressure sensor and the static pressure sensor
+    :param total_ref_pressure_method:   str, determines method of total reference pressure calculation. One of:
+                                        "trimmed median", "trimmed average", "single
     :return: 
     """
 
@@ -399,17 +427,9 @@ def calc_ptot_pstat(df, sensor_defective_mask, prandtl_data, total_ref_pressure_
     colname_static = prandtl_data['unit name static'] + '_' + str(prandtl_data['i_sens_static'])
     df["pstat"] = df[colname_static]
 
-    """fig, ax = plt.subplots()
-
-    for i in range(32):
-        ax.plot(df["ptot_rake_{0}".format(i+1)], "b-")
-    ax.plot(df["static_K04_32"], "r-")
-    ax.plot(trimmed_median_ptot, "g-")
-    ax.plot(trimmed_average_ptot, "y-")"""
-
     return df
 
-def calc_airspeed_wind(df, T, l_ref):
+def calc_airspeed_wind(df, l_ref):
     """
     --> calculates wind component in free stream direction
 
@@ -425,12 +445,12 @@ def calc_airspeed_wind(df, T, l_ref):
     R_s = 287.0500676
     # calculate derived variables (dynamic viscosity). Has to be calculated online if we chose to add a temp sensor
     # Formula from https://calculator.academy/viscosity-of-air-calculator/
-    mu = (1.458E-6 * T ** (3 / 2)) / (T + 110.4)
+    mu = (1.458E-6 * df["T_air"] ** (3 / 2)) / (df["T_air"] + 110.4)
 
     df['U_CAS'] = np.sqrt(2 * (ptot - pstat) / rho_ISA)
 
     # calculate air speeds
-    rho = pstat / (R_s * T)
+    rho = pstat / (R_s * df["T_air"])
     df['U_TAS'] = np.sqrt(np.abs(2 * (ptot - pstat) / rho))
     df['Re'] = df['U_TAS'] * l_ref * rho / mu
 
@@ -466,12 +486,11 @@ def calc_cp(df, pressure_data_ident_strings):
 
     return df
 
-def calc_cl_cm_cdp(df, df_airfoil, at_airfoil, flap_pivots=[], lambda_wall=0., sigma_wall=0., xi_wall=0.):
+def calc_cl_cm_cdp(df, df_airfoil, flap_pivots=[], lambda_wall=0., sigma_wall=0., xi_wall=0.):
     """
 
     :param df:
     :param df_airfoil:
-    :param at_airfoil:
     :param flap_pivots:     position of flap hinge; TE: one point, if TE and LE: two points
     :param lambda_wall:
     :param sigma_wall:
@@ -489,12 +508,12 @@ def calc_cl_cm_cdp(df, df_airfoil, at_airfoil, flap_pivots=[], lambda_wall=0., s
     sens_ident_cols = ["static_K0{0:d}_{1:d}".format(df_airfoil.loc[i, "Sensor unit K"],
                                                      df_airfoil.loc[i, "Sensor port"]) for i in df_airfoil.index[1:-1]]
     # calculate virtual pressure coefficient
-    df["static_virtual_top"] = df["static_virtual_bot"] = (df[sens_ident_cols[0]] + df[sens_ident_cols[-1]])/2
+    df["static_virtualTE_top"] = df["static_virtualTE_bot"] = (df[sens_ident_cols[0]] + df[sens_ident_cols[-1]])/2
     # re-arrange columns
     cols = df.columns.to_list()
     cols = cols[:3*32] + cols[-2:] + cols[3*32:-2]
     df = df[cols].copy()
-    sens_ident_cols = ["static_virtual_top"] + sens_ident_cols + ["static_virtual_bot"]
+    sens_ident_cols = ["static_virtualTE_top"] + sens_ident_cols + ["static_virtualTE_bot"]
 
 
     # calculate cl
@@ -543,7 +562,7 @@ def calc_cl_cm_cdp(df, df_airfoil, at_airfoil, flap_pivots=[], lambda_wall=0., s
     # Otherwise, correction would be applied twice
     df.loc[:, sens_ident_cols] = (1 - 2 * lambda_wall * (sigma_wall + xi_wall) - sigma_wall) * df[sens_ident_cols]
 
-    return df, sens_ident_cols, cp
+    return df, sens_ident_cols
 
 def calc_cd(df, l_ref, lambda_wall, sigma_wall, xi_wall, sensor_defective_mask):
     """
@@ -588,6 +607,7 @@ def apply_calibration_offset(filename, df):
         calibr_data = pickle.load(file)
 
     l_ref = calibr_data[6]
+    T_air = calibr_data[5] + 273.15
 
     # flatten calibration data list, order like df pressure sensors
     pressure_calibr_data = calibr_data[2] + calibr_data[3] + calibr_data[4] + calibr_data[1] + calibr_data[0]
@@ -602,12 +622,15 @@ def apply_calibration_offset(filename, df):
     # Apply calibration offsets
     df = df - df_calibr_pressures
 
+    df["T_air"] = T_air
+
     return df, l_ref
 
-def apply_calibration_20sec(df):
+def apply_calibration_20sec(df, T_air):
     """
     uses first 20 seconds to calculate pressure sensor calibration offsets
-    :param df:
+    :param df:      pandas Dataframe with pressure data
+    :param T_air:   air temperature
     :return:
     """
 
@@ -626,9 +649,13 @@ def apply_calibration_20sec(df):
     # Apply the calibration to the entire DataFrame
     df.iloc[:, :len(df.columns)-6] = df.iloc[:, :len(df.columns)-6] - offsets
 
+    # Apply air temperature
+    if not "T_air" in df.columns:
+        df["T_air"] = T_air
+
     return df
 
-def apply_manual_calibration(df, calibration_filename="manual_calibration_data.p"):
+def apply_manual_calibration(df, calibration_filename="manual_calibration_data.p", T_air=278.15):
     """
     uses first 20 seconds to calculate pressure sensor calibration offsets
     :param df:
@@ -640,6 +667,10 @@ def apply_manual_calibration(df, calibration_filename="manual_calibration_data.p
 
     # Apply the calibration to the entire DataFrame
     df.iloc[:, :len(df.columns) - 6] = df.iloc[:, :len(df.columns) - 6] - offsets
+
+    # Apply air temperature
+    if not "T_air" in df.columns:
+        df["T_air"] = T_air
 
     return df
 
@@ -687,7 +718,7 @@ def calc_wall_correction_coefficients(filepath, l_ref):
 
     return lambda_wall_corr, sigma_wall_corr, xi_wall_corr
 
-def plot_time_series(df_cp, df_p_abs, df_segments, U_cutoff=10, plot_drive=False, plot_pstat=False, unit_sens_pstat="static_K04_31", i_seg_plot=None):
+def plot_time_series(df_cp_raw, df_cp_filt, df_p_abs, df_segments, U_cutoff=10, plot_drive=False, plot_pstat=False, unit_sens_pstat="static_K04_31", i_seg_plot=None):
     """
 
     :param df_sync:
@@ -734,27 +765,31 @@ def plot_time_series(df_cp, df_p_abs, df_segments, U_cutoff=10, plot_drive=False
     # filter data
     window = 201
     polyorder = 2
-    cl_filt = savgol_filter(df_cp.loc[df_cp["U_CAS"] > U_cutoff, "cl"], window, polyorder)
-    Re_filt = savgol_filter(df_cp["Re"], window, polyorder)
-    cd_filt = savgol_filter(df_cp.loc[df_cp["U_CAS"] > U_cutoff, "cd"], window, polyorder)
+    cl_filt = savgol_filter(df_cp_raw.loc[df_cp_raw["U_CAS"] > U_cutoff, "cl"], window, polyorder)
+    Re_filt = savgol_filter(df_cp_raw["Re"], window, polyorder)
+    cd_filt = savgol_filter(df_cp_raw.loc[df_cp_raw["U_CAS"] > U_cutoff, "cd"], window, polyorder)
     p_stat_filt = savgol_filter(df_p_abs[unit_sens_pstat], window, polyorder)
 
     # Set plot lines
-    ax_alpha.plot(df_cp.loc[df_cp["U_CAS"] > U_cutoff].index, df_cp.loc[df_cp["U_CAS"] > U_cutoff, "alpha"], "k-", label=r"$\alpha$", zorder=5)
-    line = ax_Re.plot(df_cp.index, df_cp["Re"], "y-", label=r"$Re$", zorder=4, alpha=0.35)
-    ax_Re.plot(df_cp.index, Re_filt, color=line[0].get_color())
-    line = host.plot(df_cp.loc[df_cp["U_CAS"] > U_cutoff].index, df_cp.loc[df_cp["U_CAS"] > U_cutoff, "cl"], label="$c_l$", zorder=3, alpha=0.35)
-    host.plot(df_cp.loc[df_cp["U_CAS"] > U_cutoff].index, cl_filt, color=line[0].get_color())
+    ax_alpha.plot(df_cp_raw.loc[df_cp_raw["U_CAS"] > U_cutoff].index, df_cp_raw.loc[df_cp_raw["U_CAS"] > U_cutoff, "alpha"], "k-", label=r"$\alpha$", zorder=5)
+    line = ax_Re.plot(df_cp_raw.index, df_cp_raw["Re"], "y-", label=r"$Re$", zorder=4, alpha=0.35)
+    ax_Re.plot(df_cp_filt.loc[df_cp_filt["U_CAS"] > U_cutoff].index, df_cp_filt.loc[df_cp_filt["U_CAS"] > U_cutoff, "cl"], color=line[0].get_color())
+    ax_Re.plot(df_cp_raw.index, Re_filt, color="g")
+    line = host.plot(df_cp_raw.loc[df_cp_raw["U_CAS"] > U_cutoff].index, df_cp_raw.loc[df_cp_raw["U_CAS"] > U_cutoff, "cl"], label="$c_l$", zorder=3, alpha=0.35)
+    host.plot(df_cp_filt.loc[df_cp_filt["U_CAS"] > U_cutoff].index, df_cp_filt.loc[df_cp_filt["U_CAS"] > U_cutoff, "cl"], color=line[0].get_color())
+    host.plot(df_cp_raw.loc[df_cp_raw["U_CAS"] > U_cutoff].index, cl_filt, color="cyan")
     #host.plot(df.loc[df["U_CAS"] > U_cutoff].index, df.loc[df["U_CAS"] > U_cutoff, "cm"], label="$c_{m}$", zorder=2, alpha=0.35)
-    line = ax_cd.plot(df_cp.loc[df_cp["U_CAS"] > U_cutoff].index, df_cp.loc[df_cp["U_CAS"] > U_cutoff, "cd"], color="red", label="$c_d$", zorder=1, alpha=0.35)
-    ax_cd.plot(df_cp.loc[df_cp["U_CAS"] > U_cutoff].index, cd_filt, color=line[0].get_color())
+    line = ax_cd.plot(df_cp_raw.loc[df_cp_raw["U_CAS"] > U_cutoff].index, df_cp_raw.loc[df_cp_raw["U_CAS"] > U_cutoff, "cd"], color="red", label="$c_d$", zorder=1, alpha=0.35)
+    ax_cd.plot(df_cp_filt.loc[df_cp_filt["U_CAS"] > U_cutoff].index,
+               df_cp_filt.loc[df_cp_filt["U_CAS"] > U_cutoff, "cd"], color=line[0].get_color())
+    ax_cd.plot(df_cp_raw.loc[df_cp_raw["U_CAS"] > U_cutoff].index, cd_filt, color="orange")
 
     if plot_pstat:
         line = ax_pstat.plot(df_p_abs.index, df_p_abs[unit_sens_pstat], color="green", label="$p_{stat}$", zorder=1, alpha=0.35)
         ax_pstat.plot(df_p_abs.index, p_stat_filt, color=line[0].get_color())
 
     if plot_drive:
-        ax_drive.plot(df_cp.index, df_cp["Rake Position"], color="purple")
+        ax_drive.plot(df_cp_raw.index, df_cp_raw["Rake Position"], color="purple")
 
     for index, row in df_segments.iterrows():
         if index == i_seg_plot:
@@ -762,10 +797,10 @@ def plot_time_series(df_cp, df_p_abs, df_segments, U_cutoff=10, plot_drive=False
         else:
             color = 'lightgray'
         host.axvspan(row['start'], row['end'], color=color, alpha=0.5)
+        host.annotate("$i_{seg}=" + str(index) + "$", xy=(row['start'], 0))
 
     # Formatting the x-axis to show minutes and seconds
     host.xaxis.set_major_formatter(DateFormatter("%H:%M:%S"))
-    #host.xaxis.set_major_formatter(ticker.FormatStrFormatter('%0.1f'))
     # Setting labels
     host.set_xlabel("$Time[hh:mm:ss, UTC]$")
     ax_alpha.set_ylabel(r"$\alpha~\mathrm{[^\circ]}$")
@@ -794,20 +829,17 @@ def plot_time_series(df_cp, df_p_abs, df_segments, U_cutoff=10, plot_drive=False
     plt.show(block=False)
     plt.pause(0.01)
 
-    """
+
     # plot path of car
-    fig5, ax3 = plt.subplots()
-    ax3.plot(df["Longitude"], df["Latitude"], "k-")
-    ax3.plot(df.loc[df["U_CAS"] > 5, "Longitude"], df.loc[df["U_CAS"] > 5, "Latitude"], "g-")
-    """
-    """ax6.set_xlabel("$Time$")
-    ax7.set_xlabel("Rake Position / Speed")
-    ax6.set_ylabel("$c_d$")
-    ax7.set_ylabel("$Rake Position [mm]$")
-    ax6.set_title("$c_d$ vs. Time")
-    ax6.xaxis.set_major_formatter(DateFormatter("%M:%S"))
-    fig6.legend()
-    ax6.grid()"""
+    fig5, ax3 = plt.subplots(figsize=(7, 14))
+    ax3.plot(df_cp_raw["Longitude"], df_cp_raw["Latitude"], "k-")
+    for index, row in df_segments.iterrows():
+        ax3.plot(df_cp_raw.loc[((df_cp_raw.index >= row['start']) & (df_cp_raw.index <= row['end'])), "Longitude"],
+                 df_cp_raw.loc[((df_cp_raw.index >= row['start']) & (df_cp_raw.index <= row['end'])), "Latitude"])
+        t_center = row['start'] + (row['end'] - row['start'])/2
+        i_center = abs(df_cp_raw.index - t_center).argmin()
+        ax3.annotate("$i_{seg}=" + str(index) + "$", xy=(df_cp_raw.iloc[i_center].loc["Longitude"],
+                       df_cp_raw.iloc[i_center].loc[ "Latitude"]))
 
     return
 
@@ -985,10 +1017,9 @@ def prepare_polar_df(df_sync, df_segments):
     """
     iterates over alpha [1,17] deg and calculates to each alpha the mean values of cl, cd and cm; if alpha and Re
     criteria are not fulfilled, moves on to next alpha value
-    :param df_sync:             pandas dataframe with all data to be plotted
-    :param alpha_range:         AOA interval for polar
-    :param Re:                  desired Reynoldsnumber for polar
-    :return: df_polars          df with polar values ready to be plotted
+    :param df_sync:         pandas dataframe with all data to be plotted
+    :param df_segments:     pandas DataFrame with measurement segments start and end time
+    :return: df_polars      df with polar values ready to be plotted
     """
     # create a new dataframe with specified column names
     cols = ["alpha", "Re", "U_CAS", "U_TAS", "cl", "cd", "cdp", "cm", "cmr_LE", "cmr_TE"]
@@ -1005,6 +1036,57 @@ def prepare_polar_df(df_sync, df_segments):
 
     cols = np.array([[col, col+"_std"] for col in cols]).flatten()
     df_polar = pd.DataFrame(data, columns=cols)
+
+    return df_polar
+
+def calculate_polar(df_raw, df_segments, prandtl_data, df_airfoil, l_ref, flap_pivots, lambda_wall, sigma_wall,
+                    xi_wall, sensor_defective_mask=(), total_ref_pressure_method="trimmed average"):
+    """
+    calculates the polars
+    :param df_raw:      synchronized raw data
+    :param df_segments: pandas DataFrame with measurement segments start and end time
+    :param prandtl_data:                dict with "unit name static", "i_sens_static", "unit name total" and
+                                        "i_sens_total".
+                                        This specifies the sensor units and the index of the sensors of the Prandtl
+                                        probe total
+                                        pressure sensor and the static pressure sensor
+    :param df_airfoil:                  DataFrame with airfoil information: location and normal vectors of pressure tabs
+    :param l_ref:                       float, reference length (i.e. chord length of the airfoil) in meters
+    :param flap_pivots:                 2x2 numpy.ndarray with positions of flap hinges: First line: leading edge flap,
+                                        second line: trailing edge flap
+    :param lambda_wall:                 wall correction coefficient lambda (see Döller 2016)
+    :param sigma_wall:                  wall correction coefficient sigma (see Döller 2016)
+    :param xi_wall:                     wall correction coefficient xi (see Döller 2016)
+    :param sensor_defective_mask:       list of ints with indices of defective sensors. Will be omitted from drag calc
+    :param total_ref_pressure_method:   str, determines method of total reference pressure calculation. One of:
+                                        "trimmed median", "trimmed average", "single
+    :return: polar
+    """
+
+    #Average data over segments first
+    data = []
+    for i in range(len(df_segments.index)):
+        start_time = df_segments.loc[i, "start"]
+        end_time = df_segments.loc[i, "end"]
+        df_seg = df_raw.loc[(df_raw.index >= start_time) & (df_raw.index <= end_time), :]
+        s_seg = df_seg.mean()
+        data.append(s_seg)
+    df_polar = pd.DataFrame(data, columns=df_raw.columns)
+
+    # calculate total and static pressures
+    df_polar = calc_ptot_pstat(df_polar, sensor_defective_mask, prandtl_data, total_ref_pressure_method)
+
+    # calculate airspeed and wind component
+    df_polar = calc_airspeed_wind(df_polar, l_ref)
+
+    # calculate pressure coefficients from absolute pressures
+    df_polar = calc_cp(df_polar, pressure_data_ident_strings=['stat', 'ptot'])
+
+    # calculate lift coefficients
+    df_polar, _ = calc_cl_cm_cdp(df_polar, df_airfoil, flap_pivots, lambda_wall, sigma_wall, xi_wall)
+
+    # calculate drag coefficients
+    df_polar = calc_cd(df_polar, l_ref, lambda_wall, sigma_wall, xi_wall, sensor_defective_mask)
 
     return df_polar
 
@@ -1209,10 +1291,10 @@ if __name__ == '__main__':
 
         calibration_filename = '20240613-2336_manual_calibration_data.p' # TODO: Change to current calibration
     elif airfoil == "B200_topseal":
-        run = "T010_R23"
+        #run = "T010_R23"
         #run = "T006_R24"
         #run = "T006_R26"
-        #run = "T012_R27"
+        run = "T012_R27"
 
         # it is assumed, that 0th, 24th and 30th total wake pressure sensors are leaky (drop the values)
 
@@ -1383,9 +1465,9 @@ if __name__ == '__main__':
 
             # synchronize sensor data
             if sync_drive:
-                sync_data = [pstat_K02, pstat_K03, pstat_K04, ptot_rake, pstat_rake, alphas, drive]
+                sync_data = [pstat_K02, pstat_K03, pstat_K04, ptot_rake, pstat_rake, alphas, drive, GPS]
             else:
-                sync_data = [pstat_K02, pstat_K03, pstat_K04, ptot_rake, pstat_rake, alphas]
+                sync_data = [pstat_K02, pstat_K03, pstat_K04, ptot_rake, pstat_rake, alphas, GPS]
             df_sync = synchronize_data(sync_data)
 
             if calibration_type == "file":
@@ -1393,7 +1475,7 @@ if __name__ == '__main__':
                 df_sync, l_ref = apply_calibration_offset(pickle_path_calibration, df_sync)
             elif calibration_type == "20sec":
                 # apply calibration offset from first 20 seconds
-                df_sync = apply_calibration_20sec(df_sync)
+                df_sync = apply_calibration_20sec(df_sync, T_air)
             elif calibration_type == "manual":
                 df_sync = apply_manual_calibration(df_sync, calibration_filename="manual_calibration_data.p")
             else:
@@ -1405,30 +1487,46 @@ if __name__ == '__main__':
         if len(raw_data_filenames) > 1:
             df_sync = pd.concat(list_of_dfs)
 
+        df_raw = df_sync.copy()
+
+        # filter data
+        df_filt = filter_data(df_sync.copy())
+
         # calculate total reference pressure
-        ptot_method = "trimmed median"
-        #ptot_method = "trimmed average"
-        #ptot_method = "single"
-        df_sync = calc_ptot_pstat(df_sync, sensor_defective_mask, prandtl_data, total_ref_pressure_method=ptot_method)
+        df_sync = calc_ptot_pstat(df_sync, sensor_defective_mask, prandtl_data, total_ref_pressure_method="trimmed median")
+        df_filt = calc_ptot_pstat(df_filt, sensor_defective_mask, prandtl_data, total_ref_pressure_method="trimmed median")
 
         # calculate wind component
-        df_sync = calc_airspeed_wind(df_sync, T_air, l_ref)
+        df_sync = calc_airspeed_wind(df_sync, l_ref)
+        df_filt = calc_airspeed_wind(df_filt, l_ref)
 
         # calculate pressure coefficients
-        df_p_abs = copy.deepcopy(df_sync)
+        df_p_abs_raw = df_sync.copy()
+        df_p_abs_filt = df_filt.copy()
         df_sync = calc_cp(df_sync, pressure_data_ident_strings=['stat', 'ptot'])
+        df_filt = calc_cp(df_filt, pressure_data_ident_strings=['stat', 'ptot'])
+
 
         # calculate lift coefficients
-        df_sync, sens_ident_cols, cp = calc_cl_cm_cdp(df_sync, df_airfoil, at_airfoil, flap_pivots, lambda_wall, sigma_wall, xi_wall)
+        df_sync, _ = calc_cl_cm_cdp(df_sync, df_airfoil, flap_pivots, lambda_wall, sigma_wall, xi_wall)
+        df_filt, sens_ident_cols = calc_cl_cm_cdp(df_filt, df_airfoil, flap_pivots, lambda_wall, sigma_wall,
+                                                      xi_wall)
 
         # calculate drag coefficients
         df_sync = calc_cd(df_sync, l_ref, lambda_wall, sigma_wall, xi_wall, sensor_defective_mask)
+        df_filt = calc_cd(df_filt, l_ref, lambda_wall, sigma_wall, xi_wall, sensor_defective_mask)
 
         # visualisation of time series
         if plot:
-            plot_time_series(df_sync, df_p_abs, df_segments, U_cutoff, plot_drive=sync_drive, i_seg_plot=i_seg_plot)
+            plot_time_series(df_sync, df_filt, df_p_abs_raw, df_segments, U_cutoff, plot_drive=sync_drive, i_seg_plot=i_seg_plot)
 
         # generate the polar
+        ptot_method = "trimmed average"
+        df_polar_new = calculate_polar(df_raw, df_segments, prandtl_data, df_airfoil, l_ref, flap_pivots, lambda_wall,
+                                       sigma_wall, xi_wall, sensor_defective_mask,
+                                       total_ref_pressure_method=ptot_method)
+        df_polar_result_only = df_polar_new.loc[:, ['alpha', 'Re', 'cl', 'cd', 'cdp', 'U_CAS', 'U_TAS', 'cm',
+       'cmr_LE', 'cmr_TE',]]
         df_polar = prepare_polar_df(df_sync, df_segments)
         list_of_df_polars.append(df_polar)
 
@@ -1438,7 +1536,12 @@ if __name__ == '__main__':
 
         # Generate PolarTool polar
         Re_mean = np.around(df_polar.loc[:, "Re"].mean() / 5e4)*5e4
-        polar = at.PolarTool(name="Automobile wind tunnel", Re=Re_mean, flapangle=eta_TE_flap, WindtunnelName="MoProMa-Car")
+        polar = at.PolarTool(name="new eval Automobile wind tunnel", Re=Re_mean, flapangle=eta_TE_flap,
+                             WindtunnelName="MoProMa-Car")
+        polar.parseMoProMa_Polar(df_polar_new)
+        list_of_polars.append(polar)
+
+        polar = at.PolarTool(name="old eval Automobile wind tunnel", Re=Re_mean, flapangle=eta_TE_flap, WindtunnelName="MoProMa-Car")
         polar.parseMoProMa_Polar(df_polar)
         list_of_polars.append(polar)
         polar.writeXFoilPol("C:/XFOIL6.99", "MoProMa_Polar.pol")
