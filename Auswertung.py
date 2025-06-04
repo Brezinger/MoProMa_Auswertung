@@ -11,9 +11,10 @@ import re
 import pickle
 import numpy as np
 import pandas as pd
-from datetime import timezone
+from datetime import datetime, timezone
 import itertools
 import pynmea2
+from pyproj import Transformer
 
 from matplotlib.dates import DateFormatter
 import matplotlib.pyplot as plt
@@ -148,30 +149,31 @@ def read_drive(filename, t0, delta_t, sync_method="delta_t"):
 
     # Combine Date and Time into a single pandas datetime column
     df['Time'] = pd.to_datetime(df['Date'] + ' ' + df['Time'])
-    if df['Time'].iloc[0].tzinfo is None or df['Time'].iloc[0].tzinfo.utcoffset(df['Time'].iloc[0]) is None:
-        df['Time'] = (
-            df['Time']
-            .dt.tz_localize('Europe/Vienna')  # Set the correct local timezone
-            .dt.tz_convert('UTC')  # Convert to UTC
-        )
+    if len(df.index) != 0:
+        if df['Time'].iloc[0].tzinfo is None or df['Time'].iloc[0].tzinfo.utcoffset(df['Time'].iloc[0]) is None:
+            df['Time'] = (
+                df['Time']
+                .dt.tz_localize('Europe/Vienna')  # Set the correct local timezone
+                .dt.tz_convert('UTC')  # Convert to UTC
+            )
 
-    # drop date column (date column may generate problems when synchronizing data)
-    df = df.drop(columns='Date')
+        # drop date column (date column may generate problems when synchronizing data)
+        df = df.drop(columns='Date')
 
-    if sync_method == "t0":
-        # Convert start time to milliseconds since it is easier to handle arithmetic operations
-        start_time_ms = t0.timestamp() * 1000
+        if sync_method == "t0":
+            # Convert start time to milliseconds since it is easier to handle arithmetic operations
+            start_time_ms = t0.timestamp() * 1000
 
-        # Calculate the time difference in milliseconds from the first row
-        if len(df.index) > 0:
-            time_diff_ms = df['Time'] - df['Time'].iloc[0]
+            # Calculate the time difference in milliseconds from the first row
+            if len(df.index) > 0:
+                time_diff_ms = df['Time'] - df['Time'].iloc[0]
 
-            # Add this difference to the start time (in milliseconds) and convert back to datetime
-            df['Time'] = pd.to_datetime(pd.Timestamp(start_time_ms, unit='ms') + time_diff_ms, unit='ms')
-    elif sync_method == "delta_t":
-        df['Time'] = df['Time'] + delta_t
-    else:
-        raise ValueError("wrong sync method")
+                # Add this difference to the start time (in milliseconds) and convert back to datetime
+                df['Time'] = pd.to_datetime(pd.Timestamp(start_time_ms, unit='ms') + time_diff_ms, unit='ms')
+        elif sync_method == "delta_t":
+            df['Time'] = df['Time'] + delta_t
+        else:
+            raise ValueError("wrong sync method")
 
     return df
 
@@ -651,7 +653,7 @@ def apply_calibration_20sec(df, T_air):
 
     return df
 
-def apply_manual_calibration(df, calibration_filename="manual_calibration_data.p", T_air=278.15):
+def apply_manual_calibration(df, calibration_filename="manual_calibration_data.p", T_air=288.15):
     """
     uses first 20 seconds to calculate pressure sensor calibration offsets
     :param df:
@@ -662,7 +664,37 @@ def apply_manual_calibration(df, calibration_filename="manual_calibration_data.p
         offsets = pickle.load(file)
 
     # Apply the calibration to the entire DataFrame
-    df.iloc[:, :len(df.columns) - 6] = df.iloc[:, :len(df.columns) - 6] - offsets
+    df.loc[:, offsets.index] = df.loc[:, offsets.index] - offsets
+
+    # Apply air temperature
+    if not "T_air" in df.columns:
+        df["T_air"] = T_air
+
+    return df
+
+def apply_manual_calibration2(df, start_time, end_time, plot_speed=False, T_air=288.15):
+    """
+    uses time interval specified by start_time and end_time to calculate pressure sensor calibration offsets
+    :param df:
+    :param start_time:
+    :param end_time:
+    :return:
+    """
+
+    # identify all pressure sensor columns
+    cols_calibrate = [col for col in df.columns if "static_K" in col or "rake" in col]
+
+    # select data be
+    df_calib_calc = df.loc[(df.index >= start_time) & (df.index <= end_time), cols_calibrate]
+
+    calibration_offsets = df_calib_calc.mean().mean() - df_calib_calc.mean(axis=0)
+
+    df[cols_calibrate] = df[cols_calibrate] + calibration_offsets
+
+    if plot_speed:
+        fig, ax = plt.subplots()
+        ax.plot(df.index, df["U_GPS"])
+        ax.axvspan(start_time, end_time, color="gray", alpha=0.5)
 
     # Apply air temperature
     if not "T_air" in df.columns:
@@ -809,17 +841,20 @@ def plot_time_series(df, df_segments, U_cutoff=10, plot_pstat=False, plot_drive=
     plt.show(block=False)
     plt.pause(0.01)
 
-
     # plot path of car
-    fig5, ax3 = plt.subplots(figsize=(7, 14))
-    ax3.plot(df["Longitude"], df["Latitude"], "k-")
+    fig5, ax3 = plt.subplots()
+    transformer = Transformer.from_crs("wgs84", "EPSG:3035")
+    x, y = transformer.transform(df["Longitude"], df["Latitude"])
+    ax3.plot(x, y, "k-")
     for index, row in df_segments.iterrows():
-        ax3.plot(df.loc[((df.index >= row['start']) & (df.index <= row['end'])), "Longitude"],
+        x, y = transformer.transform(df.loc[((df.index >= row['start']) & (df.index <= row['end'])), "Longitude"],
                  df.loc[((df.index >= row['start']) & (df.index <= row['end'])), "Latitude"])
+        ax3.plot(x, y)
         t_center = row['start'] + (row['end'] - row['start'])/2
         i_center = abs(df.index - t_center).argmin()
-        ax3.annotate("$i_{seg}=" + str(index) + "$", xy=(df.iloc[i_center].loc["Longitude"],
-                                                         df.iloc[i_center].loc["Latitude"]))
+        x, y = transformer.transform(df.iloc[i_center].loc["Longitude"],
+                                                         df.iloc[i_center].loc["Latitude"])
+        ax3.annotate("$i_{seg}=" + str(index) + "$", xy=(x, y))
 
     return
 
@@ -1095,7 +1130,7 @@ if __name__ == '__main__':
     # Lower cutoff speed for plots
     U_cutoff = 10
     # specify test segment, which should be plotted
-    i_seg_plot = 16
+    i_seg_plot = 0
 
     # lower and upper cutoff fraction for asymmetric trimmed mean calculation for reference total pressure
     lower_frac_ptot = 0.05
@@ -1116,26 +1151,45 @@ if __name__ == '__main__':
     PPAX['CMdel'] = 0.0500
 
 
-    #airfoil = "Mü13-33"
+    airfoil = "Mü13-33"
     #airfoil = "B200"
-    airfoil = "B200_topseal"
+    #airfoil = "B200_topseal"
     # constants and input data
     if airfoil == "Mü13-33":
-        sensor_defective_mask = [0, ]
-        l_ref = 0.7
-        flap_pivots = np.array([[0.2, 0.0], [0.8, 0.0]])
-        eta_LE_flap = 0.0
-        # specifiy, if drive data should be synchronized
-        sync_drive = False
-        # Raw data file prefix
-        seg_def_files = ["T007.xlsx"]
-        digitized_LWK_polar_files_clcd = ["Re1e6_cl-cd.txt"]
-        digitized_LWK_polar_files_clalpha = ["Re1e6_cl-alpha.txt"]
-        XFOIL_polar_files = []
+        #run = "T007"
+        run = "T008"
+
+        if run == "T007":
+            calibration_start_time =  "2024-06-13 22:01:26"
+            calibration_end_time =  "2024-06-13 22:01:47"
+            # Parse into datetime objects
+            calibration_start_time = datetime.strptime(calibration_start_time, "%Y-%m-%d %H:%M:%S").replace(
+                tzinfo=timezone.utc)
+            calibration_end_time = datetime.strptime(calibration_end_time, "%Y-%m-%d %H:%M:%S").replace(
+                tzinfo=timezone.utc)
+            seg_def_files = ["T007.xlsx"]
+            digitized_LWK_polar_files_clcd = ["Re1e6_cl-cd.txt"]
+            digitized_LWK_polar_files_clalpha = ["Re1e6_cl-alpha.txt"]
+            if os.getlogin() == 'joeac':
+                WDIR = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/Mü13-33/2024-06-13/T002_T009"
+
+        if run == "T008":
+            calibration_start_time = "2024-06-13 22:37:30"
+            calibration_end_time = "2024-06-13 22:38:00"
+            # Parse into datetime objects
+            calibration_start_time = datetime.strptime(calibration_start_time, "%Y-%m-%d %H:%M:%S").replace(
+                tzinfo=timezone.utc)
+            calibration_end_time = datetime.strptime(calibration_end_time, "%Y-%m-%d %H:%M:%S").replace(
+                tzinfo=timezone.utc)
+            seg_def_files = ["T008_09.xlsx"]
+            digitized_LWK_polar_files_clcd = ["Re1e6_cl-cd.txt"]
+            digitized_LWK_polar_files_clalpha = ["Re1e6_cl-alpha.txt"]
+            if os.getlogin() == 'joeac':
+                WDIR = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/Mü13-33/2024-06-13/T002_T009"
+
         # set calibration type in seg_def Excel file ("20sec", "manual", "file")
         # set flap deflection in seg_def Excel file
         if os.getlogin() == 'joeac':
-            WDIR = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/Mü13-33/2024-06-13/T002_T009"
             segments_def_dir = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/Mü13-33/testsegments_specification"
             digitized_LWK_polar_dir = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/Mü13-33/Digitized data Döller LWK/"
             ref_dat_path = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/Mü13-33/01_Reference Data/"
@@ -1144,10 +1198,12 @@ if __name__ == '__main__':
             segments_def_dir = "D:/Python_Codes/Rohdateien/Zeitabschnitte_Polaren"
             digitized_LWK_polar_dir = "D:/Python_Codes/Rohdateien/digitized_polars_doeller"
             ref_dat_path = "D:/Python_Codes/Workingdirectory_Auswertung/"
+
         prandtl_data = {"unit name static": "static_K04", "i_sens_static": 31,
                         #"unit name total": "ptot_rake", "i_sens_total": 3} # This is the third sensor in the wake rake
                         "unit name total": "static_K04", "i_sens_total": 32} # This is the original total pressure sensor
 
+        XFOIL_polar_files = []
         foil_coord_path = os.path.join(ref_dat_path, "mue13-33-le15.dat")
         file_path_msr_pts = os.path.join(ref_dat_path, 'Messpunkte Demonstrator_Mue13-33.xlsx')
         pickle_path_msr_pts = os.path.join(ref_dat_path, 'Messpunkte Demonstrator.p')
@@ -1155,12 +1211,19 @@ if __name__ == '__main__':
         # alpha sensor offset
         alpha_sens_offset = 214.73876953125
 
-        calibration_filename = '20240613-2336_manual_calibration_data.p'
+        sensor_defective_mask = [0, ]
+        l_ref = 0.7
+        flap_pivots = np.array([[0.2, 0.0], [0.8, 0.0]])
+        eta_LE_flap = 0.0
+        # specifiy, if drive data should be synchronized
+        sync_drive = False
+        # Raw data file prefix
+
     elif airfoil == "B200":
 
-        #run = "T006"
+        run = "T006"
         #run = "T010"
-        run = "T012"
+        #run = "T012"
 
         l_ref = 0.5
         flap_pivots = np.array([[0.325, 0.0], [0.87, -0.004]])
@@ -1210,15 +1273,11 @@ if __name__ == '__main__':
         # alpha sensor offset
         alpha_sens_offset = 162.88330078125 # Campaign 1
 
-        calibration_filename = '20240613-2336_manual_calibration_data.p' # TODO: Change to current calibration
     elif airfoil == "B200_topseal":
         #run = "T010_R23"
-        run = "T006_R24"
+        #run = "T006_R24"
         #run = "T006_R26"
-        #run = "T012_R27"
-
-        # it is assumed, that 0th, 24th and 30th total wake pressure sensors are leaky (drop the values)
-
+        run = "T012_R27"
 
         l_ref = 0.5
         flap_pivots = np.array([[0.325, 0.09], [0.87, -0.004]])
@@ -1283,8 +1342,6 @@ if __name__ == '__main__':
 
         alpha_sens_offset = 272.96630859375  # Campaign 2
 
-        calibration_filename = '20250521-0043_sensor_calibration_data.p'
-
     #******************************************************************************************************************
     #******************************************************************************************************************
     #******************************************************************************************************************
@@ -1347,8 +1404,8 @@ if __name__ == '__main__':
             else:
                 eta_LE_flap = 0
 
-                # read airfoil data
-            if i == 0 or not (etas_TE_flap == etas_TE_flap[0]).all() or not (etas_LE_flap == etas_LE_flap[0]).all():
+            # read airfoil data (only in case of first file or if flap setting changes)
+            if i == 0 or not (etas_TE_flap == etas_TE_flap[0]).all() or len(np.unique(etas_LE_flap, return_counts=True)[0]) <= 1:
                 df_airfoil, at_airfoil = read_airfoil_geometry(file_path_msr_pts, c=l_ref, foil_source=foil_coord_path,
                                                             eta_LE_flap=eta_LE_flap, eta_TE_flap=eta_TE_flap,
                                                             flap_pivots=flap_pivots, pickle_file=pickle_path_msr_pts)
@@ -1357,7 +1414,7 @@ if __name__ == '__main__':
             lambda_wall, sigma_wall, xi_wall = calc_wall_correction_coefficients(cp_path_wall_correction, l_ref)
 
             calibration_type = calibration_types[i]
-            if calibration_type not in ["file", "20sec"]:
+            if calibration_type not in ["file", "20sec", "manual2"]:
                 calibration_filename = calibration_type
                 calibration_type = "manual"
 
@@ -1399,14 +1456,20 @@ if __name__ == '__main__':
                 df_sync = apply_calibration_20sec(df_sync, T_air)
             elif calibration_type == "manual":
                 df_sync = apply_manual_calibration(df_sync, calibration_filename="manual_calibration_data.p")
+            elif calibration_type == "manual2":
+                # manual2 is performed after merging the dataframes
+                pass
             else:
-                raise ValueError("wrong parameter 'calibration_type' passed. Either 'file', '20sec' or 'manual'")
+                raise ValueError("wrong parameter 'calibration_type' passed. Either 'file', '20sec', 'manual' or 'manual2'")
 
             # append the processed data to the all_data DataFrame
             list_of_dfs.append(df_sync)
-
         if len(raw_data_filenames) > 1:
             df_sync = pd.concat(list_of_dfs)
+
+        # perform calibration with
+        if calibration_type == "manual2":
+            df_sync = apply_manual_calibration2(df_sync, calibration_start_time, calibration_end_time)
 
         df_raw = df_sync.copy()
 
@@ -1452,7 +1515,7 @@ if __name__ == '__main__':
 
         # Generate PolarTool polar
         Re_mean = np.around(df_polar.loc[:, "Re"].mean() / 5e4)*5e4
-        polar = at.PolarTool(name="new eval Automobile wind tunnel", Re=Re_mean, flapangle=eta_TE_flap,
+        polar = at.PolarTool(name="Car-mounted aerodynamic measurement platform", Re=Re_mean, flapangle=eta_TE_flap,
                              WindtunnelName="MoProMa-Car")
         polar.parseMoProMa_Polar(df_polar)
         list_of_polars.append(polar)
@@ -1502,7 +1565,7 @@ if __name__ == '__main__':
     LineAppearance['linestyle'].append("None")
     LineAppearance['linestyle'].append("-")
 
-    LineAppearance['marker'].append("^")
+    LineAppearance['marker'].append("+")
     LineAppearance['marker'].append("^")
     LineAppearance['marker'].append("s")
     LineAppearance['marker'].append("s")
