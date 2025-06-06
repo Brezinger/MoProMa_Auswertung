@@ -37,7 +37,7 @@ def asymmetric_trim_mean(row, lower_frac, upper_frac):
     trimmed_values = sorted_row[lower_idx:upper_idx]
     return sum(trimmed_values) / len(trimmed_values)
 
-def trimmed_median(row, lower_frac=0.5, upper_frac=0.05):
+def trimmed_median(row, lower_frac, upper_frac):
     sorted_row = np.sort(row)
     n = len(sorted_row)
     lower_idx = int(np.floor(n * lower_frac))
@@ -412,11 +412,11 @@ def calc_ptot_pstat(df, sensor_defective_mask, prandtl_data, total_ref_pressure_
 
     if total_ref_pressure_method == "trimmed median":
         df["ptot"] = df[cols].apply(
-        lambda row: trimmed_median(row, lower_frac=0.5, upper_frac=0.05), axis=1
+        lambda row: trimmed_median(row, lower_frac=0.5, upper_frac=0.0), axis=1
     )
     elif total_ref_pressure_method == "trimmed average":
         df["ptot"] = df[cols].apply(
-        lambda row: asymmetric_trim_mean(row, lower_frac=0.5, upper_frac=0.05), axis=1
+        lambda row: asymmetric_trim_mean(row, lower_frac=0.7, upper_frac=0.05), axis=1
     )
     elif total_ref_pressure_method == "single":
         df["ptot"] = ptot_single
@@ -672,7 +672,8 @@ def apply_manual_calibration(df, calibration_filename="manual_calibration_data.p
 
     return df
 
-def apply_manual_calibration2(df, start_time, end_time, plot_speed=False, T_air=288.15):
+def apply_time_interval_calibration(df, start_time, end_time, prandtl_data, df_airfoil, sensor_defective_mask,
+                                    plot_speed=True, T_air=288.15):
     """
     uses time interval specified by start_time and end_time to calculate pressure sensor calibration offsets
     :param df:
@@ -684,10 +685,17 @@ def apply_manual_calibration2(df, start_time, end_time, plot_speed=False, T_air=
     # identify all pressure sensor columns
     cols_calibrate = [col for col in df.columns if "static_K" in col or "rake" in col]
 
-    # select data be
+    # select data within time interval
     df_calib_calc = df.loc[(df.index >= start_time) & (df.index <= end_time), cols_calibrate]
 
-    calibration_offsets = df_calib_calc.mean().mean() - df_calib_calc.mean(axis=0)
+    # use only used and functional sensors for mean calculation
+    cols_static_prandtl = [prandtl_data["unit name static"] + "_{0:d}".format(prandtl_data["i_sens_static"]),]
+    cols_static_used = ["static_K{0:02d}_{1:d}".format(row["Sensor unit K"], row["Sensor port"]) for i, row in df_airfoil.iterrows() if row["Sensor unit K"] >= 0]
+    cols_rake_used = [col for col in df.columns if "rake" in col and int(col.split("_")[-1])-1 not in sensor_defective_mask]
+
+    df_mean_calc = df_calib_calc.loc[:, cols_static_prandtl+cols_static_used+cols_rake_used]
+
+    calibration_offsets = df_mean_calc.mean().mean() - df_calib_calc.mean(axis=0)
 
     df[cols_calibrate] = df[cols_calibrate] + calibration_offsets
 
@@ -746,7 +754,7 @@ def calc_wall_correction_coefficients(filepath, l_ref):
 
     return lambda_wall_corr, sigma_wall_corr, xi_wall_corr
 
-def plot_time_series(df, df_segments, U_cutoff=10, plot_pstat=False, plot_drive=False, i_seg_plot=None):
+def plot_time_series(df, df_segments, U_cutoff=10, save_subdir="plot", plot_pstat=False, plot_drive=False, i_seg_plot=None):
     """
 
     :param df_sync:
@@ -769,7 +777,7 @@ def plot_time_series(df, df_segments, U_cutoff=10, plot_pstat=False, plot_drive=
         ax.axvspan(row['start'], row['end'], color=color, alpha=0.5)"""
 
     # plot alpha, cl, cm, cmr over time
-    fig, host = plt.subplots()
+    fig, host = plt.subplots(figsize=(20, 12))
     # Create twin axes on the right side of the host axis
     ax_alpha = host.twinx()
     ax_Re = host.twinx()
@@ -838,12 +846,21 @@ def plot_time_series(df, df_segments, U_cutoff=10, plot_pstat=False, plot_drive=
         labels.extend(label)
     host.tick_params(axis='x', labelrotation=80)
     fig.legend(lines, labels, loc='upper right')
+    fig.tight_layout()
     plt.show(block=False)
     plt.pause(0.01)
 
+    # save figure
+    if save_subdir is not None:
+        figdir = os.path.join(os.getcwd(), save_subdir + "_plots")
+        if not os.path.exists(figdir):
+            os.makedirs(figdir)
+        plt.savefig(os.path.join(figdir, "time_series.pdf"))
+
+
     # plot path of car
     fig5, ax3 = plt.subplots()
-    transformer = Transformer.from_crs("wgs84", "EPSG:3035")
+    transformer = Transformer.from_crs("wgs84", "EPSG:31287")
     x, y = transformer.transform(df["Longitude"], df["Latitude"])
     ax3.plot(x, y, "k-")
     for index, row in df_segments.iterrows():
@@ -855,10 +872,13 @@ def plot_time_series(df, df_segments, U_cutoff=10, plot_pstat=False, plot_drive=
         x, y = transformer.transform(df.iloc[i_center].loc["Longitude"],
                                                          df.iloc[i_center].loc["Latitude"])
         ax3.annotate("$i_{seg}=" + str(index) + "$", xy=(x, y))
+    ax3.axis("equal")
+    if save_subdir is not None:
+        plt.savefig(os.path.join(figdir, "car_path.pdf"))
 
     return
 
-def plot_cp_x_and_wake(df, df_airfoil, at_airfoil, sens_ident_cols, df_segments, df_polar, sensor_defective_mask):
+def plot_cp_x_and_wake(df, df_airfoil, at_airfoil, save_subdir, sens_ident_cols, df_segments, df_polar, sensor_defective_mask):
     """
     plots cp(x) and wake depression (x) at certain operating points (alpha, Re and beta)
     :param df:      pandas dataframe with index time and data to be plotted
@@ -940,6 +960,12 @@ def plot_cp_x_and_wake(df, df_airfoil, at_airfoil, sens_ident_cols, df_segments,
         ax.axis("equal")
         fig.tight_layout()
         plt.pause(0.01)
+
+        if save_subdir is not None:
+            figdir = os.path.join(os.getcwd(), save_subdir + "_plots")
+            if not os.path.exists(figdir):
+                os.makedirs(figdir)
+            plt.savefig(os.path.join(figdir, "cp_iseg{0}.pdf".format(i_seg)))
 
         # write cp to file
         filename = "C:/XFOIL6.99/{0}_Re{1:.2E}_cl{2:.2f}_alpha{3:.2f}.cp".format(at_airfoil.filename.split(".dat")[0], Re, cl, alpha)
@@ -1125,16 +1151,13 @@ def plot_polars(df):
 if __name__ == '__main__':
 
     plot = True
+    savefigs = True
 
     T_air = 288
     # Lower cutoff speed for plots
     U_cutoff = 10
     # specify test segment, which should be plotted
     i_seg_plot = 0
-
-    # lower and upper cutoff fraction for asymmetric trimmed mean calculation for reference total pressure
-    lower_frac_ptot = 0.05
-    upper_frac_ptot = 0.5
 
     PPAX = dict()
     PPAX['CLmin'] = 0.0
@@ -1151,41 +1174,172 @@ if __name__ == '__main__':
     PPAX['CMdel'] = 0.0500
 
 
-    airfoil = "Mü13-33"
+    #airfoil = "Mü13-33"
     #airfoil = "B200"
-    #airfoil = "B200_topseal"
+    airfoil = "B200_topseal"
     # constants and input data
     if airfoil == "Mü13-33":
         #run = "T007"
-        run = "T008"
+        #run = "T008_T009"
+        #run = "T010"
+        #run = "rake pos"
+        #run = "T012"
+        #run = "T014"
+        #run = "T020"
+        #run = "T021"
+        #run = "T022"
+        #run = "T024"
+        #run = "T025"
+        run = "T026"
+
+        polnames = ["Car-tunnel"]
+
+        sensor_defective_mask = [0, 24, 30]
 
         if run == "T007":
             calibration_start_time =  "2024-06-13 22:01:26"
             calibration_end_time =  "2024-06-13 22:01:47"
-            # Parse into datetime objects
-            calibration_start_time = datetime.strptime(calibration_start_time, "%Y-%m-%d %H:%M:%S").replace(
-                tzinfo=timezone.utc)
-            calibration_end_time = datetime.strptime(calibration_end_time, "%Y-%m-%d %H:%M:%S").replace(
-                tzinfo=timezone.utc)
+
             seg_def_files = ["T007.xlsx"]
             digitized_LWK_polar_files_clcd = ["Re1e6_cl-cd.txt"]
             digitized_LWK_polar_files_clalpha = ["Re1e6_cl-alpha.txt"]
             if os.getlogin() == 'joeac':
                 WDIR = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/Mü13-33/2024-06-13/T002_T009"
 
-        if run == "T008":
-            calibration_start_time = "2024-06-13 22:37:30"
-            calibration_end_time = "2024-06-13 22:38:00"
-            # Parse into datetime objects
-            calibration_start_time = datetime.strptime(calibration_start_time, "%Y-%m-%d %H:%M:%S").replace(
-                tzinfo=timezone.utc)
-            calibration_end_time = datetime.strptime(calibration_end_time, "%Y-%m-%d %H:%M:%S").replace(
-                tzinfo=timezone.utc)
-            seg_def_files = ["T008_09.xlsx"]
+        if run == "T008_T009":
+            seg_def_files = ["T008_T009.xlsx"]
             digitized_LWK_polar_files_clcd = ["Re1e6_cl-cd.txt"]
             digitized_LWK_polar_files_clalpha = ["Re1e6_cl-alpha.txt"]
             if os.getlogin() == 'joeac':
                 WDIR = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/Mü13-33/2024-06-13/T002_T009"
+
+        if run == "T010":
+            seg_def_files = ["T010.xlsx"]
+            digitized_LWK_polar_files_clcd = ["Re1e6_cl-cd.txt"]
+            digitized_LWK_polar_files_clalpha = ["Re1e6_cl-alpha.txt"]
+            if os.getlogin() == 'joeac':
+                WDIR = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/Mü13-33/2024-06-13/T002_T009"
+
+        if run == "rake pos":
+            seg_def_files = ["T008_T009.xlsx", "T007.xlsx", "T010.xlsx"]
+            polnames = ["rake y100", "rake y280", "rake y370"]
+            PPAX['ALmin'] = 0.0000
+            PPAX['ALmax'] = 20.0000
+            PPAX['ALdel'] = 5.0000
+            digitized_LWK_polar_files_clcd = ["Re1e6_cl-cd.txt"]
+            digitized_LWK_polar_files_clalpha = ["Re1e6_cl-alpha.txt"]
+            if os.getlogin() == 'joeac':
+                WDIR = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/Mü13-33/2024-06-13/T002_T009"
+
+        if run == "T012":
+            T_air = 10 + 273.15
+            seg_def_files = ["T012.xlsx"]
+            PPAX['CLmin'] = 0.0
+            PPAX['CLmax'] = 2.00
+            PPAX['CLdel'] = 0.5000
+            PPAX['ALmin'] = 0.0000
+            PPAX['ALmax'] = 20.0000
+            PPAX['ALdel'] = 5.0000
+            digitized_LWK_polar_files_clcd = ["Re1e6_cl-cd.txt"]
+            digitized_LWK_polar_files_clalpha = ["Re1e6_cl-alpha.txt"]
+            if os.getlogin() == 'joeac':
+                WDIR = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/Mü13-33/2024-06-13/T002_T009"
+
+        if run == "T014":
+            T_air = 10 + 273.15
+            seg_def_files = ["T014.xlsx"]
+            PPAX['CLmin'] = -0.5
+            PPAX['CLmax'] = 1.500
+            PPAX['CLdel'] = 0.5000
+            digitized_LWK_polar_files_clcd = ["Re1e6_cl-cd.txt"]
+            digitized_LWK_polar_files_clalpha = ["Re1e6_cl-alpha.txt"]
+            if os.getlogin() == 'joeac':
+                WDIR = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/Mü13-33/2024-06-13/T002_T009"
+
+        if run == "T020":
+            T_air = 18 + 273.15
+            seg_def_files = ["T020.xlsx"]
+            PPAX['CLmin'] = -0.5
+            PPAX['CLmax'] = 1.500
+            PPAX['CLdel'] = 0.5000
+            PPAX['ALmin'] = -5.0000
+            PPAX['ALmax'] = 15.0000
+            PPAX['ALdel'] = 5.0000
+            digitized_LWK_polar_files_clcd = ["Re8e5_beta7.5_cl-cd.txt"]
+            digitized_LWK_polar_files_clalpha = ["Re8e5_beta7.5_cl-alpha.txt"]
+            if os.getlogin() == 'joeac':
+                WDIR = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/Mü13-33/2024-06-18"
+
+        if run == "T021":
+            T_air = 18 + 273.15
+            seg_def_files = ["T021.xlsx"]
+            PPAX['CLmin'] = -0.5
+            PPAX['CLmax'] = 1.500
+            PPAX['CLdel'] = 0.5000
+            PPAX['ALmin'] = -5.0000
+            PPAX['ALmax'] = 15.0000
+            PPAX['ALdel'] = 5.0000
+            digitized_LWK_polar_files_clcd = ["Re1e6_beta7.5_cl-cd.txt"]
+            digitized_LWK_polar_files_clalpha = ["Re1e6_beta7.5_cl-alpha.txt"]
+            if os.getlogin() == 'joeac':
+                WDIR = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/Mü13-33/2024-06-18"
+
+        if run == "T022":
+            T_air = 18 + 273.15
+            seg_def_files = ["T022.xlsx"]
+            PPAX['CLmin'] = -0.5
+            PPAX['CLmax'] = 1.500
+            PPAX['CLdel'] = 0.5000
+            PPAX['ALmin'] = -5.0000
+            PPAX['ALmax'] = 20.0000
+            PPAX['ALdel'] = 5.0000
+            digitized_LWK_polar_files_clcd = ["Re1.5e6_beta7.5_cl-cd.txt"]
+            digitized_LWK_polar_files_clalpha = ["Re1.5e6_beta7.5_cl-alpha.txt"]
+            if os.getlogin() == 'joeac':
+                WDIR = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/Mü13-33/2024-06-18"
+
+        if run == "T024":
+            T_air = 18 + 273.15
+            seg_def_files = ["T024.xlsx"]
+            PPAX['CLmin'] = -0.5
+            PPAX['CLmax'] = 2.000
+            PPAX['CLdel'] = 0.5000
+            PPAX['ALmin'] = -5.0000
+            PPAX['ALmax'] = 20.0000
+            PPAX['ALdel'] = 5.0000
+            digitized_LWK_polar_files_clcd = ["Re1.5e6_beta15_cl-cd.txt"]
+            digitized_LWK_polar_files_clalpha = ["Re1.5e6_beta15_cl-alpha.txt"]
+            if os.getlogin() == 'joeac':
+                WDIR = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/Mü13-33/2024-06-18"
+
+        if run == "T025":
+            T_air = 18 + 273.15
+            seg_def_files = ["T025.xlsx"]
+            PPAX['CLmin'] = -0.5
+            PPAX['CLmax'] = 2.00
+            PPAX['CLdel'] = 0.5000
+            PPAX['ALmin'] = -5.0000
+            PPAX['ALmax'] = 20.0000
+            PPAX['ALdel'] = 5.0000
+            digitized_LWK_polar_files_clcd = ["Re8e5_beta15_cl-cd.txt"]
+            digitized_LWK_polar_files_clalpha = ["Re8e5_beta15_cl-alpha.txt"]
+            if os.getlogin() == 'joeac':
+                WDIR = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/Mü13-33/2024-06-18"
+
+        if run == "T026":
+            T_air = 18 + 273.15
+            seg_def_files = ["T026.xlsx"]
+            sensor_defective_mask = [0, 20, 24, 30]
+            PPAX['CLmin'] = -0.5
+            PPAX['CLmax'] = 2.00
+            PPAX['CLdel'] = 0.5000
+            PPAX['ALmin'] = -5.0000
+            PPAX['ALmax'] = 20.0000
+            PPAX['ALdel'] = 5.0000
+            digitized_LWK_polar_files_clcd = ["Re1e6_beta15_cl-cd.txt"]
+            digitized_LWK_polar_files_clalpha = ["Re1e6_beta15_cl-alpha.txt"]
+            if os.getlogin() == 'joeac':
+                WDIR = "C:/OneDrive/OneDrive - Achleitner Aerospace GmbH/ALF - General/Auto-Windkanal/07_Results/Mü13-33/2024-06-18"
 
         # set calibration type in seg_def Excel file ("20sec", "manual", "file")
         # set flap deflection in seg_def Excel file
@@ -1211,7 +1365,7 @@ if __name__ == '__main__':
         # alpha sensor offset
         alpha_sens_offset = 214.73876953125
 
-        sensor_defective_mask = [0, ]
+
         l_ref = 0.7
         flap_pivots = np.array([[0.2, 0.0], [0.8, 0.0]])
         eta_LE_flap = 0.0
@@ -1224,6 +1378,8 @@ if __name__ == '__main__':
         run = "T006"
         #run = "T010"
         #run = "T012"
+
+        polnames = ["Car-tunnel"]
 
         l_ref = 0.5
         flap_pivots = np.array([[0.325, 0.0], [0.87, -0.004]])
@@ -1274,10 +1430,12 @@ if __name__ == '__main__':
         alpha_sens_offset = 162.88330078125 # Campaign 1
 
     elif airfoil == "B200_topseal":
-        #run = "T010_R23"
+        run = "T010_R23"
         #run = "T006_R24"
         #run = "T006_R26"
-        run = "T012_R27"
+        #run = "T012_R27"
+
+        polnames = ["Car-tunnel"]
 
         l_ref = 0.5
         flap_pivots = np.array([[0.325, 0.09], [0.87, -0.004]])
@@ -1367,7 +1525,7 @@ if __name__ == '__main__':
         # read raw data filenames
         raw_data_filenames = pd.read_excel(segments_def_path, skiprows=0, usecols="J").dropna().values.astype(
             "str").flatten()
-        calibration_types = pd.read_excel(segments_def_path, skiprows=0, usecols="K").dropna().values.astype(
+        calibration_infos = pd.read_excel(segments_def_path, skiprows=0, usecols="K").dropna().values.astype(
             "str").flatten()
         etas_TE_flap = pd.read_excel(segments_def_path, skiprows=0, usecols="L").dropna().values.astype(
             "float").flatten()
@@ -1413,8 +1571,10 @@ if __name__ == '__main__':
             # calculate wall correction coefficients
             lambda_wall, sigma_wall, xi_wall = calc_wall_correction_coefficients(cp_path_wall_correction, l_ref)
 
-            calibration_type = calibration_types[i]
-            if calibration_type not in ["file", "20sec", "manual2"]:
+            calibration_info = calibration_infos[i].split(";")
+            calibration_type = calibration_info[0]
+
+            if calibration_type not in ["None", "file", "20sec", "time interval"]:
                 calibration_filename = calibration_type
                 calibration_type = "manual"
 
@@ -1456,9 +1616,19 @@ if __name__ == '__main__':
                 df_sync = apply_calibration_20sec(df_sync, T_air)
             elif calibration_type == "manual":
                 df_sync = apply_manual_calibration(df_sync, calibration_filename="manual_calibration_data.p")
-            elif calibration_type == "manual2":
-                # manual2 is performed after merging the dataframes
-                pass
+            elif calibration_type == "time interval":
+                calibration_start_time = calibration_info[1].lstrip().rstrip()
+                calibration_end_time = calibration_info[2].lstrip().rstrip()
+                # Parse into datetime objects
+                calibration_start_time = datetime.strptime(calibration_start_time, "%Y-%m-%d %H:%M:%S").replace(
+                    tzinfo=timezone.utc)
+                calibration_end_time = datetime.strptime(calibration_end_time, "%Y-%m-%d %H:%M:%S").replace(
+                    tzinfo=timezone.utc)
+                df_sync = apply_time_interval_calibration(df_sync, calibration_start_time, calibration_end_time,
+                                                          prandtl_data, df_airfoil, sensor_defective_mask, plot, T_air)
+            elif calibration_type == "None":
+                # no calibration is performed
+                df_sync["T_air"] = 288.15
             else:
                 raise ValueError("wrong parameter 'calibration_type' passed. Either 'file', '20sec', 'manual' or 'manual2'")
 
@@ -1466,10 +1636,6 @@ if __name__ == '__main__':
             list_of_dfs.append(df_sync)
         if len(raw_data_filenames) > 1:
             df_sync = pd.concat(list_of_dfs)
-
-        # perform calibration with
-        if calibration_type == "manual2":
-            df_sync = apply_manual_calibration2(df_sync, calibration_start_time, calibration_end_time)
 
         df_raw = df_sync.copy()
 
@@ -1498,10 +1664,12 @@ if __name__ == '__main__':
 
         # visualisation of time series
         if plot:
-            plot_time_series(df_filt, df_segments, U_cutoff, plot_drive=sync_drive, i_seg_plot=i_seg_plot)
+            save_target = run if savefigs else None
+            plot_time_series(df_filt, df_segments, U_cutoff, save_target, plot_drive=sync_drive, i_seg_plot=i_seg_plot)
 
         # generate the polar
-        ptot_method = "trimmed average"
+        #ptot_method = "trimmed average"
+        ptot_method = "trimmed median"
         df_polar = calculate_polar(df_sync, df_segments, prandtl_data, df_airfoil, l_ref, flap_pivots, lambda_wall,
                                        sigma_wall, xi_wall, sensor_defective_mask,
                                        total_ref_pressure_method=ptot_method)
@@ -1511,11 +1679,12 @@ if __name__ == '__main__':
 
         # plot cp(x) and cp wake
         if plot:
-            plot_cp_x_and_wake(df_raw, df_airfoil, at_airfoil, sens_ident_cols, df_segments, df_polar, sensor_defective_mask)
+            save_target = run if savefigs else None
+            plot_cp_x_and_wake(df_raw, df_airfoil, at_airfoil, save_target, sens_ident_cols, df_segments, df_polar, sensor_defective_mask)
 
         # Generate PolarTool polar
         Re_mean = np.around(df_polar.loc[:, "Re"].mean() / 5e4)*5e4
-        polar = at.PolarTool(name="Car-mounted aerodynamic measurement platform", Re=Re_mean, flapangle=eta_TE_flap,
+        polar = at.PolarTool(name=polnames[i_file], Re=Re_mean, flapangle=eta_TE_flap,
                              WindtunnelName="MoProMa-Car")
         polar.parseMoProMa_Polar(df_polar)
         list_of_polars.append(polar)
@@ -1538,70 +1707,83 @@ if __name__ == '__main__':
         elif "XFOILSUC" in XFOIL_polar_file:
             XFOIL_polars[-1].name = "XFOILSUC-mod"
 
-    LineAppearance = dict()
-
-    LineAppearance['color'] = []
-    LineAppearance['linestyle'] = []
-    LineAppearance['marker'] = []
+    LineAppearance_AWK = dict()
+    LineAppearance_AWK['color'] = []
     # R G B
-    LineAppearance['color'].append((255. / 255., 68. / 255., 68. / 255.))  # red
+    LineAppearance_AWK['color'].append((255. / 255., 68. / 255., 68. / 255.))  # red
     #LineAppearance['color'].append("k")
-    LineAppearance['color'].append((255. / 255., 165. / 255., 0. / 255.))  # orange
-    #LineAppearance['color'].append("k")
-    LineAppearance['color'].append((255. / 255., 255. / 255., 68. / 255.))  # yellow
-    LineAppearance['color'].append("k")
-    LineAppearance['color'].append((68. / 255., 255. / 255., 68. / 255.))  # green
-    LineAppearance['color'].append((68. / 255., 255. / 255., 255. / 255.))  # turquoise
-    LineAppearance['color'].append((60. / 255., 155. / 255., 255. / 255.))  # light blue
-    LineAppearance['color'].append((205. / 255., 55. / 255., 255. / 255.))  # purple
-    LineAppearance['color'].append((255. / 255., 0. / 255., 255. / 255.))  # rose/purple
+    LineAppearance_AWK['color'].append((60. / 255., 155. / 255., 255. / 255.))  # light blue
+    # LineAppearance['color'].append("k")
+    LineAppearance_AWK['color'].append((255. / 255., 165. / 255., 0. / 255.))  # orange
+    LineAppearance_AWK['color'].append((68. / 255., 255. / 255., 68. / 255.))  # green
+    LineAppearance_AWK['color'].append((68. / 255., 255. / 255., 255. / 255.))  # turquoise
+    LineAppearance_AWK['color'].append((255. / 255., 255. / 255., 68. / 255.))  # yellow
+    LineAppearance_AWK['color'].append((205. / 255., 55. / 255., 255. / 255.))  # purple
+    LineAppearance_AWK['color'].append((255. / 255., 0. / 255., 255. / 255.))  # rose/purple
+    LineAppearance_AWK['linestyle'] = ["None"] * len(LineAppearance_AWK['color'])
+    LineAppearance_AWK['marker'] = ["+"] * len(LineAppearance_AWK['color'])
 
-    LineAppearance['linestyle'].append("None")
-    LineAppearance['linestyle'].append("-")
-    LineAppearance['linestyle'].append("None")
-    LineAppearance['linestyle'].append("-")
-    LineAppearance['linestyle'].append("None")
-    LineAppearance['linestyle'].append("-")
-    LineAppearance['linestyle'].append("None")
-    LineAppearance['linestyle'].append("-")
+    LineAppearance_Stu = dict()
+    LineAppearance_Stu['color'] = ["k"] * 4
+    LineAppearance_Stu['linestyle'] = ["-"] *4
+    LineAppearance_Stu['marker'] = ['o', 'x', '^', 's']
 
-    LineAppearance['marker'].append("+")
-    LineAppearance['marker'].append("^")
-    LineAppearance['marker'].append("s")
-    LineAppearance['marker'].append("s")
-    LineAppearance['marker'].append('o')
-    LineAppearance['marker'].append('o')
-    LineAppearance['marker'].append('o')
-    LineAppearance['marker'].append('x')
-    LineAppearance['marker'].append('x')
+    LineAppearance_XFOIL = dict()
+    LineAppearance_XFOIL['color'] = LineAppearance_AWK['color']
+    LineAppearance_XFOIL['linestyle'] = ["-"] * len(LineAppearance_XFOIL['color'])
+    LineAppearance_XFOIL['marker'] = ['None'] * len(LineAppearance_XFOIL['color'])
 
     altsort_polars = []
     i_line = 0
-    for a, b, c in itertools.zip_longest(list_of_polars, polarsStu, XFOIL_polars):
+    i_AWK = 0
+    i_Stu = 0
+    i_XFOIL = 0
+    LineAppearance = dict()
+    LineAppearance['color'] = [None] * (len(polarsStu) + len(list_of_polars) + len(XFOIL_polars))
+    LineAppearance['linestyle'] = [None] * (len(polarsStu) + len(list_of_polars) + len(XFOIL_polars))
+    LineAppearance['marker'] = [None] * (len(polarsStu) + len(list_of_polars) + len(XFOIL_polars))
+
+    for a, b, c in itertools.zip_longest(polarsStu, XFOIL_polars, list_of_polars):
         if a:
             altsort_polars.append(a)
+            LineAppearance['color'][i_line] = LineAppearance_Stu['color'][i_Stu]
+            LineAppearance['linestyle'][i_line] = LineAppearance_Stu['linestyle'][i_Stu]
+            LineAppearance['marker'][i_line] = LineAppearance_Stu['marker'][i_Stu]
             i_line += 1
+            i_Stu += 1
         if b:
             altsort_polars.append(b)
+            LineAppearance['color'][i_line] = LineAppearance_XFOIL['color'][i_XFOIL]
+            LineAppearance['linestyle'][i_line] = LineAppearance_XFOIL['linestyle'][i_XFOIL]
+            LineAppearance['marker'][i_line] = LineAppearance_XFOIL['marker'][i_XFOIL]
             i_line += 1
+            i_XFOIL += 1
         if c:
             altsort_polars.append(c)
-            # do not show marker for XFOIL polars (makes plot unreadable due to tight operation point spacing)
-            LineAppearance['marker'][i_line] = "None"
-            LineAppearance['linestyle'][i_line] = "-"
+            LineAppearance['color'][i_line] = LineAppearance_AWK['color'][i_AWK]
+            LineAppearance['linestyle'][i_line] = LineAppearance_AWK['linestyle'][i_AWK]
+            LineAppearance['marker'][i_line] = LineAppearance_AWK['marker'][i_AWK]
             i_line += 1
+            i_AWK += 1
+
 
     if plot:
         altsort_polars[0].plotPolar(additionalPolars=altsort_polars[1:], PPAX=PPAX, Colorplot=True,
                                     LineAppearance=LineAppearance, highlight=i_seg_plot)
-    altsort_polars[0].plotPolar(additionalPolars=altsort_polars[1:], PPAX=PPAX, Colorplot=True,
-                                LineAppearance=LineAppearance, saveFlag=True, format="pdf",
-                                saveFileName=seg_def_files[0].rstrip(".xlsx"))
+
+    if savefigs:
+        savedir = os.path.join(os.getcwd(), run + '_plots')
+        if not os.path.exists(savedir):
+            os.mkdir(savedir)
+        cwd = os.getcwd()
+        os.chdir(savedir)
+        altsort_polars[0].plotPolar(additionalPolars=altsort_polars[1:], PPAX=PPAX, Colorplot=True,
+                                    LineAppearance=LineAppearance, saveFlag=True, format="pdf",
+                                    saveFileName="Polar_" + run)
+        os.chdir(cwd)
 
     # export polar
-    if not "run" in locals():
-        run = ""
-    altsort_polars[0].writeXFoilPol("C:/XFOIL6.99", airfoil+".pol")
+    list_of_polars[0].writeXFoilPol("C:/XFOIL6.99", airfoil+".pol")
 
     print("done")
 
